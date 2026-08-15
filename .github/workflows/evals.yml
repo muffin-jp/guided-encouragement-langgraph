@@ -1,0 +1,46 @@
+name: Prompt evals
+
+# These evals call the paid Claude API (generation + distress classifier +
+# LLM-as-judge), so they run on changes that can affect model behaviour —
+# prompts, the graph/nodes, and the eval harness itself — rather than on every
+# push. Trigger manually anytime via the "Run workflow" button.
+on:
+  pull_request:
+    paths:
+      - "app/prompts/**"
+      - "app/graph/**"
+      - "app/config.py"
+      - "evals/**"
+      - ".github/workflows/evals.yml"
+  workflow_dispatch:
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Run eval suite (real API)
+        run: uv run python evals/run.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # Always upload results, even when the gate fails, so reviewers can read
+      # the per-case detail and judge reasons from the failing run.
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: evals/results/
