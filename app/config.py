@@ -9,7 +9,7 @@ that evals exercise exactly what production ships.
 from __future__ import annotations
 
 import os
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 
 # --- Models -----------------------------------------------------------------
@@ -39,7 +39,7 @@ RATE_LIMIT_RETRY_AFTER = "60"
 MAX_FREE_TEXT_LENGTH = 200
 
 
-class Feeling(str, Enum):
+class Feeling(StrEnum):
     """The preset feelings a player can pick on the post-stage screen.
 
     "custom" means the player skipped the chips and only wrote free text.

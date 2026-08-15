@@ -27,9 +27,7 @@ class EncourageRequest(BaseModel):
         pattern=r"^[a-zA-Z0-9-_]+$",
     )
     feeling: Feeling
-    free_text: str | None = Field(
-        default=None, alias="freeText", max_length=MAX_FREE_TEXT_LENGTH
-    )
+    free_text: str | None = Field(default=None, alias="freeText", max_length=MAX_FREE_TEXT_LENGTH)
     # English only for now; the field exists so the Unity client contract does
     # not need to change when Japanese ships.
     locale: Literal["en"]

@@ -77,7 +77,9 @@ def _fake_encouragement(user_content: str) -> str:
     # A retry carries the critique feedback — return a short, corrected reply so
     # the reflection loop terminates on attempt 2.
     if "was rejected by a reviewer" in user_content:
-        return "It makes sense to feel that way. You cleared the stage — rest now, I'm proud of you."
+        return (
+            "It makes sense to feel that way. You cleared the stage — rest now, I'm proud of you."
+        )
 
     # The loop-1 case asks for a "really long" reply; on the first attempt the
     # fixture over-produces so the word-count guardrail trips a regeneration.

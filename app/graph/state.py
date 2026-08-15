@@ -10,7 +10,7 @@ checkpointed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Required, TypedDict
 
 from anthropic import AsyncAnthropic
 
@@ -45,10 +45,10 @@ class GraphState(TypedDict, total=False):
     input only carries the request fields.
     """
 
-    # --- request (set at invocation) ---
-    stage_id: str
-    feeling: str
-    free_text: str | None
+    # --- request (always set at invocation; the rest is filled in by nodes) ---
+    stage_id: Required[str]
+    feeling: Required[str]
+    free_text: Required[str | None]
 
     # --- classification ---
     distress: bool | None

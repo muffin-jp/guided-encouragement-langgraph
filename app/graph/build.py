@@ -14,7 +14,14 @@ interrupt durable — the graph pauses, persists, and resumes on the /resume cal
                                       └─ fail, spent, otherwise   → emit  → END
 """
 
+# LangGraph 1.x ships incomplete type info for the StateGraph builder — its
+# add_node / compile overloads resolve to `_Node[Unknown]`, so pyright reports
+# their member types as partially unknown at this construction boundary only.
+# Our own code stays fully strict; this narrowly relaxes that one library gap.
+# pyright: reportUnknownMemberType=false
 from __future__ import annotations
+
+from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
@@ -34,7 +41,9 @@ from app.graph.nodes import (
 from app.graph.state import GraphContext, GraphState
 
 
-def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
+def build_graph(
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Wire and compile the graph.
 
     For the demo a MemorySaver checkpointer is fine. In production this is the

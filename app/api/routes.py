@@ -14,13 +14,17 @@ The graph, checkpointer, and Anthropic client are built once in the lifespan
 (main.py) and read from ``app.state`` here.
 """
 
+# slowapi's @limiter.limit decorator is untyped and its `.limit` member resolves
+# to an unknown return, so pyright flags the two decorated routes below. This
+# narrowly relaxes those two library-boundary rules; the rest stays strict.
+# pyright: reportUntypedFunctionDecorator=false, reportUnknownMemberType=false
 from __future__ import annotations
 
 import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -49,10 +53,11 @@ router = APIRouter(prefix="/api")
 def _translate(mode: str, data: Any, thread_id: str) -> dict[str, str] | None:
     """Map one graph stream item to an SSE frame, or None to ignore it."""
     if mode == "custom" and isinstance(data, dict):
-        if data.get("type") == "meta":
-            return meta_frame(data["kind"])
-        if data.get("type") == "token":
-            return token_frame(data["text"])
+        event = cast("dict[str, Any]", data)
+        if event.get("type") == "meta":
+            return meta_frame(event["kind"])
+        if event.get("type") == "token":
+            return token_frame(event["text"])
     elif mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         # Distress case paused for human moderation: tell the client which
         # thread to resume. Contract-compatible (clients still read `.type`).

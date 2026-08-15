@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -29,7 +29,7 @@ logger = logging.getLogger("bloom")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if langsmith_enabled():
         # LangSmith reads its own env (LANGSMITH_API_KEY/PROJECT). We just flip
         # the tracing switch LangChain/LangGraph look for.

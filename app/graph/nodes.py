@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any, cast
 
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
@@ -85,9 +86,7 @@ def truncate_to_word_limit(text: str, limit: int = WORD_LIMIT) -> str:
 # --- nodes ------------------------------------------------------------------
 
 
-async def classify_distress(
-    state: GraphState, runtime: Runtime[GraphContext]
-) -> GraphState:
+async def classify_distress(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Step 1 of the two-step safety design.
 
     Only runs the model when the player wrote free text: preset feeling chips
@@ -117,14 +116,17 @@ async def classify_distress(
     )
     try:
         parsed = json.loads(_text_from(response))
-        if isinstance(parsed, dict) and isinstance(parsed.get("distress"), bool):
-            return {"distress": parsed["distress"]}
     except (json.JSONDecodeError, ValueError):
-        logger.warning("distress classifier returned unparseable output; failing safe")
+        parsed = None
+    if isinstance(parsed, dict):
+        value = cast("dict[str, Any]", parsed).get("distress")
+        if isinstance(value, bool):
+            return {"distress": value}
+    logger.warning("distress classifier returned unparseable output; failing safe")
     return {"distress": True}
 
 
-async def generate(state: GraphState, runtime: Runtime[GraphContext]) -> GraphState:
+async def generate(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Produce Mamorin's reply (buffered).
 
     On the reflection loop's retry, the previous critique reason is fed back so
@@ -158,7 +160,7 @@ async def generate(state: GraphState, runtime: Runtime[GraphContext]) -> GraphSt
     return {"draft": _text_from(response).strip(), "attempts": attempts + 1}
 
 
-async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> GraphState:
+async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """The reflection guardrail.
 
     Cheap deterministic checks first (word count, red-flag regex); only if those
@@ -186,9 +188,7 @@ async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> GraphSt
 
     # Cheap checks passed — spend the judge.
     client = runtime.context.client
-    scores = await judge_encouragement(
-        client, state["feeling"], state.get("free_text"), draft
-    )
+    scores = await judge_encouragement(client, state["feeling"], state.get("free_text"), draft)
     if scores.safety == "fail":
         result = {
             "passed": False,
@@ -209,7 +209,7 @@ async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> GraphSt
     return {"critique": result}
 
 
-def moderate(state: GraphState, runtime: Runtime[GraphContext]) -> GraphState:
+def moderate(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Human-in-the-loop gate for distress cases.
 
     Calls ``interrupt(...)`` with the flagged case; the graph pauses and
@@ -226,13 +226,14 @@ def moderate(state: GraphState, runtime: Runtime[GraphContext]) -> GraphState:
             "stage_id": state["stage_id"],
         }
     )
-    approved = bool(decision.get("approve", True)) if isinstance(decision, dict) else True
-    note = decision.get("note") if isinstance(decision, dict) else None
+    decision_dict = cast("dict[str, Any]", decision) if isinstance(decision, dict) else {}
+    approved = bool(decision_dict.get("approve", True))
+    note = decision_dict.get("note")
     logger.info("moderation decision: approved=%s note=%r", approved, note)
     return {"moderator_approved": approved, "moderator_note": note}
 
 
-async def support(state: GraphState, runtime: Runtime[GraphContext]) -> GraphState:
+async def support(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Stream the static, pre-written support message word by word.
 
     Never model-generated: a player in a hard moment must always get the same
@@ -246,7 +247,7 @@ async def support(state: GraphState, runtime: Runtime[GraphContext]) -> GraphSta
     return {"path": "support", "final_text": SUPPORT_MESSAGE}
 
 
-async def emit(state: GraphState, runtime: Runtime[GraphContext]) -> GraphState:
+async def emit(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Terminal node for the encouragement path: stream the approved draft.
 
     Reached when critique passed, or when the loop is exhausted on a

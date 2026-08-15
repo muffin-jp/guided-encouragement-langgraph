@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, cast
 
 from anthropic import AsyncAnthropic
 
@@ -54,7 +54,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     parsed = json.loads(raw[start : end + 1])
     if not isinstance(parsed, dict):
         raise ValueError("judge reply was not a JSON object")
-    return parsed
+    return cast("dict[str, Any]", parsed)
 
 
 def _coerce_score(value: Any, field: str) -> int:
@@ -117,7 +117,5 @@ async def judge_encouragement(
             }
         ],
     )
-    text = "".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    text = "".join(block.text for block in response.content if block.type == "text")
     return parse_judge(text)

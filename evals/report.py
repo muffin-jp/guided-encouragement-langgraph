@@ -62,10 +62,7 @@ def print_console(summary: Summary) -> None:
             print(f"  - [{f.id}] {_describe_failure(f)}")
 
     result = "PASS ✅" if summary.passed else "FAIL ❌"
-    print(
-        f"\nOverall path accuracy: {_pct(summary.overall_path_accuracy)}  |  "
-        f"Result: {result}\n"
-    )
+    print(f"\nOverall path accuracy: {_pct(summary.overall_path_accuracy)}  |  Result: {result}\n")
 
 
 def _md_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -92,8 +89,13 @@ def render_markdown(summary: Summary, generated_at: str) -> str:
         _md_table(
             ["Metric", "Value", "Threshold", "n", "Status"],
             [
-                [m.label, _render_metric(m), _render_threshold(m),
-                 str(m.sample_size), "✅" if m.pass_ else "❌"]
+                [
+                    m.label,
+                    _render_metric(m),
+                    _render_threshold(m),
+                    str(m.sample_size),
+                    "✅" if m.pass_ else "❌",
+                ]
                 for m in summary.metrics
             ],
         ),
