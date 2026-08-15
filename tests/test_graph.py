@@ -23,9 +23,15 @@ from tests.fakes import FakeClient
 pytestmark = pytest.mark.asyncio
 
 
-async def _run(client: FakeClient, feeling: str, free_text: str | None) -> dict[str, Any]:
+async def _run(
+    client: FakeClient,
+    feeling: str,
+    free_text: str | None,
+    *,
+    enable_moderation: bool = False,
+) -> dict[str, Any]:
     """Invoke the graph once, auto-resuming a moderation interrupt if it pauses."""
-    graph: Any = build_graph()
+    graph: Any = build_graph(enable_moderation=enable_moderation)
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
     context = GraphContext(client=cast(AsyncAnthropic, client))
     result = await graph.ainvoke(
@@ -60,13 +66,26 @@ async def test_free_text_runs_the_classifier() -> None:
     assert client.calls_to(DISTRESS_MODEL) == 1
 
 
-async def test_distress_routes_to_support_via_interrupt() -> None:
+async def test_distress_streams_support_immediately_by_default() -> None:
+    # Default: a distressed player never waits on a human — support streams
+    # straight away, with no interrupt.
     client = FakeClient(distress=True)
     result = await _run(client, "custom", "I feel hopeless and alone")
-    assert result["_interrupted"] is True  # paused for human moderation
+    assert result["_interrupted"] is False  # no pause on the live path
     assert result["path"] == "support"
     assert result["final_text"].startswith("Thank you for telling me")
     # The static support message is never model-generated.
+    assert client.calls_to(GENERATION_MODEL) == 0
+
+
+async def test_distress_pauses_for_moderation_when_enabled() -> None:
+    # With the HITL gate enabled, distress pauses at the interrupt and is
+    # continued via resume; the delivered words are still the static support ones.
+    client = FakeClient(distress=True)
+    result = await _run(client, "custom", "I feel hopeless and alone", enable_moderation=True)
+    assert result["_interrupted"] is True  # paused for human moderation
+    assert result["path"] == "support"
+    assert result["final_text"].startswith("Thank you for telling me")
     assert client.calls_to(GENERATION_MODEL) == 0
 
 

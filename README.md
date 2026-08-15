@@ -23,18 +23,18 @@ the safety design legible and testable:
                     distress=true    │    distress=false
               ┌───────────────────---┘    └───────────────────┐
               ▼                                                ▼
-        ┌───────────┐   interrupt()                     ┌──────────┐
-        │ moderate  │ ─ ─ ─ ─ ─ ─ ─►  (pause,           │ generate │ ◄────────┐
-        │  (HITL)   │      persist to checkpointer)      └────┬─────┘          │
-        └─────┬─────┘   ◄─ /resume  Command(resume=…)         ▼                │ regenerate
-              ▼                                          ┌──────────┐          │ with critique
-        ┌───────────┐                                    │ critique │          │ as feedback
-        │  support  │  static, reviewed words            └────┬─────┘          │
-        └─────┬─────┘  (never model-generated)     pass  │  fail & attempts<2  │
-              ▼                                           │  └──────────────────┘
-             END  ◄──── emit (stream approved draft) ◄────┘  fail & exhausted:
-                                                               safety → support
-                                                               else   → best-effort draft
+        ┌───────────┐                                    ┌──────────┐
+        │  support  │  static, reviewed words            │ generate │ ◄────────┐
+        │           │  (streamed immediately)            └────┬─────┘          │
+        └─────┬─────┘                                         ▼                │ regenerate
+              │        · · opt-in HITL gate · ·         ┌──────────┐          │ with critique
+              │        MODERATION_ENABLED inserts       │ critique │          │ as feedback
+              │        `moderate` (interrupt/resume)    └────┬─────┘          │
+              │        before support                   pass │ fail & attempts<2│
+              ▼                                              │  └──────────────┘
+             END  ◄──── emit (stream approved draft) ◄───────┘  fail & exhausted:
+                                                                  safety → support
+                                                                  else   → best-effort draft
 ```
 
 Three things this buys us, each called out below: a **two-step safety design**, a bounded
@@ -61,14 +61,18 @@ feedback. The loop is **bounded by `MAX_ATTEMPTS` (2)** and can never run foreve
 *safety* failure falls back to the static support message, and any other failure emits the
 best-available draft, truncated to the word limit. `tests/test_graph.py` asserts termination.
 
-### Human-in-the-loop moderation
+### Human-in-the-loop moderation (opt-in)
 
-On the distress path, `moderate` calls LangGraph's `interrupt(...)` with the flagged case. The graph
-**pauses and persists to the checkpointer**; `POST /api/encourage/{thread_id}/resume` continues it
-with `Command(resume=…)` carrying the moderator decision. The moderator decision is recorded but
-never withholds care — the support message is always delivered. For the demo the checkpointer is an
-in-memory `MemorySaver`; `app/graph/build.py` marks the single seam to swap in an async Postgres
-checkpointer for production (paused cases would then survive restarts and span instances).
+A distressed player should never wait on a human, so **by default the distress path streams the
+static support message immediately** — no pause. The human-in-the-loop gate stays fully implemented
+and is inserted on the live path only when **`MODERATION_ENABLED`** is set: `moderate` then calls
+LangGraph's `interrupt(...)` with the flagged case, the graph **pauses and persists to the
+checkpointer**, and `POST /api/encourage/{thread_id}/resume` continues it with `Command(resume=…)`
+carrying the moderator decision. Even then the decision only gets recorded — it never withholds care,
+the support message is always delivered. For the demo the checkpointer is an in-memory `MemorySaver`;
+`app/graph/build.py` marks the single seam to swap in an async Postgres checkpointer for production
+(paused cases would then survive restarts and span instances). The interrupt/resume machinery is
+covered by `tests/test_graph.py` regardless of the default.
 
 ## Streaming: mapping the graph onto SSE
 
@@ -77,8 +81,9 @@ what the graph emits onto the existing SSE contract:
 
 - Nodes emit structured `meta` / `token` events through LangGraph's **custom stream writer**
   (`runtime.stream_writer`); the route maps them 1:1 to `event: meta` / `event: token` frames.
-- A graph pause (`__interrupt__` in the `updates` stream) becomes an `awaiting_moderation` meta plus
-  `done`, with the thread id (also in the `X-Thread-Id` header) so the client can call `/resume`.
+- When the opt-in moderation gate is enabled, a graph pause (`__interrupt__` in the `updates` stream)
+  becomes an `awaiting_moderation` meta plus `done`, with the thread id (also in the `X-Thread-Id`
+  header) so the client can call `/resume`. With the default (gate off) there is no pause.
 - End of run → `event: done`. Any exception is logged server-side and surfaces as a friendly,
   in-world `error` frame then `done` — never a stack trace.
 
@@ -122,8 +127,9 @@ only ever sees friendly text.
 
 ### `POST /api/encourage/{thread_id}/resume`
 
-Resumes a graph paused at the moderation interrupt. Body: `{"approve": bool, "note": str | null}`.
-Streams the continuation using the same SSE format. Returns `404` if the thread isn't paused.
+Resumes a graph paused at the moderation interrupt (only reachable when `MODERATION_ENABLED` is set).
+Body: `{"approve": bool, "note": str | null}`. Streams the continuation using the same SSE format.
+Returns `404` if the thread isn't paused.
 
 ## Running
 

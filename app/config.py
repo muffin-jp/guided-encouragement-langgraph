@@ -31,6 +31,14 @@ WORD_LIMIT = 40
 # unbounded. Kept in config so the bound is a single, testable knob.
 MAX_ATTEMPTS = 2
 
+# Human-in-the-loop moderation gate on the distress path. Off by default: a
+# distressed player should never wait on a human, so distress streams the static
+# support message immediately. When enabled, distress cases pause at an
+# interrupt() for a moderator to review and are continued via the /resume route.
+# The HITL machinery is always present (node, interrupt, /resume); this flag only
+# decides whether it sits on the live request path.
+MODERATION_ENABLED = os.environ.get("MODERATION_ENABLED", "").lower() in {"1", "true", "yes"}
+
 # --- Rate limiting ----------------------------------------------------------
 RATE_LIMIT = "10/minute"
 RATE_LIMIT_RETRY_AFTER = "60"

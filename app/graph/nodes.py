@@ -270,8 +270,12 @@ async def emit(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, A
 
 
 def route_after_classify(state: GraphState) -> str:
-    """distress → moderate (HITL); otherwise → generate."""
-    return "moderate" if state.get("distress") else "generate"
+    """distress → support (or the moderation gate, when enabled); else → generate.
+
+    The edge mapping in build.py sends the ``"distress"`` key to either
+    ``support`` (default: stream immediately) or ``moderate`` (HITL enabled).
+    """
+    return "distress" if state.get("distress") else "generate"
 
 
 def route_after_critique(state: GraphState) -> str:

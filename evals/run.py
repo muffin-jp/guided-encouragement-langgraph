@@ -2,9 +2,10 @@
 
 Ported from the TypeScript evals/run.ts. It calls the compiled graph's
 ``ainvoke`` (not a reimplementation) so the evals exercise exactly what
-production ships — routing, the reflection loop, and the moderation interrupt
-included. Distress cases pause at the interrupt and are auto-resumed here, which
-is what makes the HITL path testable end-to-end.
+production ships — routing and the reflection loop. Distress routes straight to
+support by default; if the optional moderation gate (MODERATION_ENABLED) is on,
+the graph pauses at the interrupt and this runner auto-approves to continue, so
+the eval still mirrors whatever production is configured to ship.
 
 Usage:
     uv run python evals/run.py            # real run (needs ANTHROPIC_API_KEY)
