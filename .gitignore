@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# venv / uv
+.venv/
+
+# env files (never commit secrets); keep the example template
+.env
+.env.*
+!.env.example
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.pyright/
+
+# OS
+.DS_Store
+
+# eval outputs are regenerated on each run; committed copies are fine to keep,
+# but ignore transient ones. (Committed by choice — see evals/results/.)

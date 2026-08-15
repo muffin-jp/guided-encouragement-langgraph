@@ -1,0 +1,53 @@
+[project]
+name = "bloom-langgraph"
+version = "0.1.0"
+description = "Bloom Guided Encouragement — FastAPI + LangGraph port of the Mamorin wellness feature"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sse-starlette>=2.1",
+    "langgraph>=1.0,<2.0",
+    "langgraph-checkpoint>=2.0",
+    "anthropic>=0.69",
+    "pydantic>=2.9",
+    "slowapi>=0.1.9",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+langsmith = ["langsmith>=0.1"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.7",
+    "pyright>=1.1.380",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+include = ["app", "evals", "tests"]
+reportMissingTypeStubs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
