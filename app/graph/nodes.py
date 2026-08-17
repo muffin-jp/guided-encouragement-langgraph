@@ -193,9 +193,7 @@ async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> dict[st
     # Cheap checks passed — spend the judge (the real guardrail).
     client = runtime.context.client
     try:
-        scores = await judge_encouragement(
-            client, state["feeling"], state.get("free_text"), draft
-        )
+        scores = await judge_encouragement(client, state["feeling"], state.get("free_text"), draft)
     except Exception:
         # Judge outage: the deterministic safety checks (injection/clinical
         # language, length) already passed, so fail OPEN to the draft rather
