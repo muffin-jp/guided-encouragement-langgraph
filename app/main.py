@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import router
-from app.config import CORS_ALLOW_ORIGINS, langsmith_enabled
+from app.config import CORS_ALLOW_ORIGIN_REGEX, CORS_ALLOW_ORIGINS, langsmith_enabled
 from app.graph.build import build_graph
 from app.llm import build_anthropic_client
 from app.ratelimit import limiter, rate_limit_exceeded_handler
@@ -63,6 +63,7 @@ app = FastAPI(title="Bloom — Guided Encouragement", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOW_ORIGINS,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["Content-Type"],
     expose_headers=["X-Thread-Id"],

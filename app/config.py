@@ -44,15 +44,21 @@ RATE_LIMIT = "10/minute"
 RATE_LIMIT_RETRY_AFTER = "60"
 
 # --- CORS -------------------------------------------------------------------
-# Browser clients on a different origin (e.g. the Next.js demo UI on :3000)
-# must be allow-listed here or the browser blocks the fetch. Comma-separated
-# origins; defaults to the local Next.js dev server. Server-to-server callers
-# (curl, the Unity client) are unaffected by CORS.
+# Browser clients on a different origin (e.g. the Next.js demo UI) must be
+# allow-listed or the browser blocks the fetch. Server-to-server callers (curl,
+# the Unity client) are unaffected by CORS.
+#
+# For convenience the default matches localhost / 127.0.0.1 on ANY port via a
+# regex, so the demo works whether Next.js lands on :3000, :3001, etc. Set an
+# explicit comma-separated CORS_ALLOW_ORIGINS list in production instead.
 CORS_ALLOW_ORIGINS = [
     origin.strip()
-    for origin in os.environ.get("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")
+    for origin in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",")
     if origin.strip()
 ]
+CORS_ALLOW_ORIGIN_REGEX = os.environ.get(
+    "CORS_ALLOW_ORIGIN_REGEX", r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+)
 
 # --- Free text --------------------------------------------------------------
 MAX_FREE_TEXT_LENGTH = 200
