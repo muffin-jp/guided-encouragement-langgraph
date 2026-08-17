@@ -15,10 +15,11 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import router
-from app.config import langsmith_enabled
+from app.config import CORS_ALLOW_ORIGINS, langsmith_enabled
 from app.graph.build import build_graph
 from app.llm import build_anthropic_client
 from app.ratelimit import limiter, rate_limit_exceeded_handler
@@ -55,6 +56,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="Bloom — Guided Encouragement", lifespan=lifespan)
+
+# Allow browser clients on other origins (e.g. the Next.js demo UI) to call the
+# API. The X-Thread-Id header is exposed so a browser client can read it off the
+# initial response and drive the /resume route when moderation is enabled.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    expose_headers=["X-Thread-Id"],
+)
 
 # Wire slowapi: the limiter needs to live on app.state and its 429s need the
 # friendly handler with Retry-After.

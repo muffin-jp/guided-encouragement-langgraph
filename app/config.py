@@ -43,6 +43,17 @@ MODERATION_ENABLED = os.environ.get("MODERATION_ENABLED", "").lower() in {"1", "
 RATE_LIMIT = "10/minute"
 RATE_LIMIT_RETRY_AFTER = "60"
 
+# --- CORS -------------------------------------------------------------------
+# Browser clients on a different origin (e.g. the Next.js demo UI on :3000)
+# must be allow-listed here or the browser blocks the fetch. Comma-separated
+# origins; defaults to the local Next.js dev server. Server-to-server callers
+# (curl, the Unity client) are unaffected by CORS.
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+
 # --- Free text --------------------------------------------------------------
 MAX_FREE_TEXT_LENGTH = 200
 
