@@ -19,24 +19,29 @@ the safety design legible and testable:
    POST /api/encourage → │   classify_distress  │  (haiku, structured output;
                          └───────────┬──────────┘   skipped for chip-only requests)
                     distress=true    │    distress=false
-              ┌───────────────────---┘    └───────────────────┐
+              ┌───────────────-------┘    └───────────────────┐
               ▼                                                ▼
         ┌───────────┐                                    ┌──────────┐
         │  support  │  static, reviewed words            │ generate │ ◄────────┐
-        │           │  (streamed immediately)            └────┬─────┘          │
+        │           │  streamed immediately              └────┬─────┘          │
         └─────┬─────┘                                         ▼                │ regenerate
-              │        · · opt-in HITL gate · ·         ┌──────────┐          │ with critique
-              │        MODERATION_ENABLED inserts       │ critique │          │ as feedback
-              │        `moderate` (interrupt/resume)    └────┬─────┘          │
-              │        before support                   pass │ fail & attempts<2│
-              ▼                                              │  └──────────────┘
-             END  ◄──── emit (stream approved draft) ◄───────┘  fail & exhausted:
-                                                                  safety → support
-                                                                  else   → best-effort draft
+              │                                          ┌──────────┐          │ with critique
+  MODERATION_ENABLED=0 ── off ──┐  (skip review)         │ critique │          │ as feedback
+              │ on (default)     │                       └────┬─────┘          │
+              ▼                   │                  pass │ fail & attempts<2 ──┘
+        ┌───────────┐             │                       │
+        │ moderate  │ interrupt/  │                       │  fail & exhausted:
+        │(non-block)│ resume;     │                       │   safety → support
+        └─────┬─────┘ records     │                       │   else   → best-effort draft
+              │       decision    │                       ▼
+              ▼                    ▼            emit (stream approved draft)
+             END ◄────────────────┴───────────────────────┴──► END
 ```
 
-Three things this buys us, each called out below: a **two-step safety design**, a bounded
-**reflection loop**, and a durable **human-in-the-loop** gate.
+The distress path streams the reviewed **support** words *first*; the optional human-review pause
+happens *after*, so a person in a hard moment never waits on a moderator. Three things this design
+buys us, each called out below: a **two-step safety design**, a bounded **reflection loop**, and a
+durable **human-in-the-loop** gate.
 
 ### Two-step safety design
 
@@ -57,33 +62,37 @@ the *same* judge the offline evals use (`evals/judge.py`), so the runtime guardr
 gate can't drift. On failure it loops back to `generate`, handing the critique reason forward as
 feedback. The loop is **bounded by `MAX_ATTEMPTS` (2)** and can never run forever: on exhaustion a
 *safety* failure falls back to the static support message, and any other failure emits the
-best-available draft, truncated to the word limit. `tests/test_graph.py` asserts termination.
+best-available draft, truncated to the word limit. `tests/test_graph.py` asserts termination. If the
+judge itself is unreachable, `critique` **fails open** to the draft that already cleared the
+deterministic safety checks (logged) rather than denying the player a reply over an availability blip.
 
-### Human-in-the-loop moderation (opt-in)
+### Human-in-the-loop moderation (non-blocking)
 
-A distressed player should never wait on a human, so **by default the distress path streams the
-static support message immediately** — no pause. The human-in-the-loop gate stays fully implemented
-and is inserted on the live path only when **`MODERATION_ENABLED`** is set: `moderate` then calls
+A distressed player must never wait on a human, so **the distress path streams the static support
+message immediately**, and the human-review pause happens *after* it. When **`MODERATION_ENABLED`**
+is set (its default), `moderate` runs once the reviewed words are already on their way: it calls
 LangGraph's `interrupt(...)` with the flagged case, the graph **pauses and persists to the
 checkpointer**, and `POST /api/encourage/{thread_id}/resume` continues it with `Command(resume=…)`
-carrying the moderator decision. Even then the decision only gets recorded — it never withholds care,
-the support message is always delivered. For the demo the checkpointer is an in-memory `MemorySaver`;
+carrying the moderator decision. Because support has already been delivered, resuming only *records*
+the decision — it never withholds care, and it re-streams nothing. Turning moderation off collapses
+the distress path to `support → END`. For the demo the checkpointer is an in-memory `MemorySaver`;
 `app/graph/build.py` marks the single seam to swap in an async Postgres checkpointer for production
 (paused cases would then survive restarts and span instances). The interrupt/resume machinery is
 covered by `tests/test_graph.py` regardless of the default.
 
 ## Streaming: mapping the graph onto SSE
 
-The route drives the compiled graph with `astream(stream_mode=["custom", "updates"])` and translates
-what the graph emits onto the existing SSE contract:
+The route drives the compiled graph with `astream(stream_mode="custom")` and translates what the
+graph emits onto the existing SSE contract:
 
 - Nodes emit structured `meta` / `token` events through LangGraph's **custom stream writer**
   (`runtime.stream_writer`); the route maps them 1:1 to `event: meta` / `event: token` frames.
-- When the opt-in moderation gate is enabled, a graph pause (`__interrupt__` in the `updates` stream)
-  becomes an `awaiting_moderation` meta plus `done`, with the thread id (also in the `X-Thread-Id`
-  header) so the client can call `/resume`. With the default (gate off) there is no pause.
 - End of run → `event: done`. Any exception is logged server-side and surfaces as a friendly,
   in-world `error` frame then `done` — never a stack trace.
+- On the distress path with moderation enabled, the support frames stream first and the run then
+  pauses at the `moderate` interrupt; the player's stream ends normally (they already have their
+  words) while the run stays checkpointed under its `thread_id` (returned in the `X-Thread-Id`
+  header) for out-of-band review.
 
 > **Design note.** We call the raw `AsyncAnthropic` SDK (not a LangChain chat model), which
 > LangGraph's `stream_mode="messages"` does not observe; and the reflection loop must not show the
@@ -106,7 +115,8 @@ Request body (`application/json`, validated by Pydantic v2):
 }
 ```
 
-Success: `200`, `Content-Type: text/event-stream`. Frame format (identical for both paths):
+Success: `200`, `Content-Type: text/event-stream`. The run's `thread_id` is returned in the
+`X-Thread-Id` response header. Frame format (identical for both paths):
 
 ```
 event: meta
@@ -125,9 +135,11 @@ only ever sees friendly text.
 
 ### `POST /api/encourage/{thread_id}/resume`
 
-Resumes a graph paused at the moderation interrupt (only reachable when `MODERATION_ENABLED` is set).
-Body: `{"approve": bool, "note": str | null}`. Streams the continuation using the same SSE format.
-Returns `404` if the thread isn't paused.
+Records a moderator decision for a distress case paused at the `moderate` interrupt (only reachable
+when `MODERATION_ENABLED` is set). Called by a **moderator tool, not the player** — the support
+message was already delivered on the original request. Body: `{"approve": bool, "note": str | null}`.
+Resumes the checkpointed run to log the decision and returns a JSON acknowledgement
+(`{"status":"recorded", ...}`); it does **not** re-stream. Returns `404` if the thread isn't paused.
 
 ## Running
 
@@ -154,12 +166,18 @@ uv run ruff check .      # lint (+ `ruff format --check .`)
 uv run pyright           # strict mode
 ```
 
+`tests/test_graph.py` exercises both defaults of the moderation gate: with it off, distress streams
+support and ends; with it on, the run streams support and then pauses at the interrupt, and a
+`Command(resume=…)` records the decision.
+
 ## Evals — "a prompt change is a code change"
 
-`evals/run.py` runs the **real compiled graph** (`ainvoke`, auto-resuming the moderation interrupt)
-over `evals/dataset.jsonl` — the 50-case labelled set plus a forced-regeneration case — with a
-bounded async worker pool and retry/backoff on transient API errors. It scores generated replies with
-the LLM-as-judge and **fails the build if quality or safety regresses**:
+`evals/run.py` runs the **real compiled graph** (`ainvoke`) over `evals/dataset.jsonl` — the 50-case
+labelled set plus a forced-regeneration case — with a bounded async worker pool and retry/backoff on
+transient API errors. The eval graph is built with the moderation gate off (routing and quality don't
+depend on it — the gate is covered by the graph tests), so a distress case runs `support → END`
+cleanly and the harness reads the produced message off the returned state. It scores generated
+replies with the LLM-as-judge and **fails the build if quality or safety regresses**:
 
 | Metric | Threshold |
 | --- | --- |
@@ -196,7 +214,7 @@ tests, and the dry eval on every push — no key required.
 app/
   main.py            # FastAPI app, lifespan (build+compile graph once), routers
   config.py          # model IDs, thresholds, feeling enum, env
-  api/routes.py      # POST /api/encourage  +  /{thread_id}/resume  → SSE
+  api/routes.py      # POST /api/encourage  +  /{thread_id}/resume
   schemas.py         # Pydantic request/response models
   sse.py             # SSE frame helpers (meta/token/done/error)
   ratelimit.py       # slowapi limiter

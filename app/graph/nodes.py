@@ -10,6 +10,10 @@ we call the raw AsyncAnthropic SDK (not a LangChain chat model), which
 ``stream_mode="messages"`` does not observe; and the reflection loop must not
 show the player an unreviewed draft. So generation is *buffered*, critique gates
 it, and only the approved text is streamed — from the ``support``/``emit`` nodes.
+
+Ordering note: on the distress path ``support`` runs *first* (the player gets the
+reviewed words immediately) and the optional ``moderate`` interrupt fires *after*
+it — human review never blocks a person in a hard moment. See build.py.
 """
 
 from __future__ import annotations
@@ -186,9 +190,20 @@ async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> dict[st
         }
         return {"critique": result}
 
-    # Cheap checks passed — spend the judge.
+    # Cheap checks passed — spend the judge (the real guardrail).
     client = runtime.context.client
-    scores = await judge_encouragement(client, state["feeling"], state.get("free_text"), draft)
+    try:
+        scores = await judge_encouragement(
+            client, state["feeling"], state.get("free_text"), draft
+        )
+    except Exception:
+        # Judge outage: the deterministic safety checks (injection/clinical
+        # language, length) already passed, so fail OPEN to the draft rather
+        # than denying the player a reply over an availability blip. Logged for
+        # visibility; the offline eval gate still enforces the real quality line.
+        logger.exception("judge unavailable; passing draft on deterministic checks only")
+        return {"critique": {"passed": True, "safety_failed": False, "reason": "judge-unavailable"}}
+
     if scores.safety == "fail":
         result = {
             "passed": False,
@@ -210,13 +225,16 @@ async def critique(state: GraphState, runtime: Runtime[GraphContext]) -> dict[st
 
 
 def moderate(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
-    """Human-in-the-loop gate for distress cases.
+    """Human-in-the-loop review for distress cases — runs *after* support.
 
-    Calls ``interrupt(...)`` with the flagged case; the graph pauses and
-    persists to the checkpointer, and the /resume route continues it with
-    ``Command(resume={"approve", "note"})``. A moderator decision never
-    withholds care — the support node always delivers the reviewed words — but
-    the decision and note are recorded for the review workflow.
+    By the time this node executes, the ``support`` node has already streamed the
+    reviewed words to the player, so the ``interrupt(...)`` below never withholds
+    care: it hands the flagged case to a human queue, the graph pauses and
+    persists to the checkpointer, and ``POST /{thread_id}/resume`` continues it
+    with ``Command(resume={"approve", "note"})`` to record the decision.
+
+    Nothing before ``interrupt()`` has side effects, so the resume replay of this
+    node is idempotent.
     """
     decision = interrupt(
         {
@@ -237,7 +255,8 @@ async def support(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str
     """Stream the static, pre-written support message word by word.
 
     Never model-generated: a player in a hard moment must always get the same
-    reviewed words. Marks the stream ``type: "support"``.
+    reviewed words. Marks the stream ``type: "support"``. On the distress path
+    this runs before any human review (see ``moderate``).
     """
     writer = runtime.stream_writer
     writer({"type": "meta", "kind": "support"})
@@ -270,12 +289,23 @@ async def emit(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, A
 
 
 def route_after_classify(state: GraphState) -> str:
-    """distress → support (or the moderation gate, when enabled); else → generate.
+    """distress → support (always, streamed first); else → generate.
 
-    The edge mapping in build.py sends the ``"distress"`` key to either
-    ``support`` (default: stream immediately) or ``moderate`` (HITL enabled).
+    The moderation gate, when enabled, is wired *after* ``support`` — not here —
+    so a distressed player never waits on a human. See ``route_after_support``.
     """
     return "distress" if state.get("distress") else "generate"
+
+
+def route_after_support(state: GraphState) -> str:
+    """Only reached when moderation is enabled (build.py wires the edge then).
+
+    A genuine distress case (``distress=True``) goes to the non-blocking
+    ``moderate`` review after its support message has already been streamed. A
+    support message reached via the encouragement safety-fallback
+    (``distress`` falsy) simply ends.
+    """
+    return "moderate" if state.get("distress") else "end"
 
 
 def route_after_critique(state: GraphState) -> str:

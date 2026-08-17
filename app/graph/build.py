@@ -6,18 +6,19 @@ interrupt durable — the graph pauses, persists, and resumes on the /resume cal
 
     START
       → classify_distress
-          ├─ distress → support → END                 (default: stream immediately)
-          │            └ moderate ─(interrupt/resume)→ support   when MODERATION_ENABLED
+          ├─ distress → support ─(stream reviewed words immediately)
+          │              ├─ moderate ─(interrupt/resume, non-blocking)→ END   [moderation on]
+          │              └─ END                                                [moderation off]
           └─ else     → generate → critique
-                                      ├─ pass                     → emit  → END
-                                      ├─ fail & attempts left     → generate  (loop)
-                                      ├─ fail, spent, safety fail → support → END
-                                      └─ fail, spent, otherwise   → emit  → END
+                                     ├─ pass                     → emit  → END
+                                     ├─ fail & attempts left     → generate  (loop)
+                                     ├─ fail, spent, safety fail → support → …
+                                     └─ fail, spent, otherwise   → emit  → END
 
-A distressed player should never wait on a human, so by default distress streams
-the static support message straight away. The human-in-the-loop gate (moderate +
-interrupt + /resume) stays fully implemented and is inserted on the live path
-only when ``MODERATION_ENABLED`` is set.
+Support always streams *before* any human review, so a distressed player never
+waits on a moderator. When ``MODERATION_ENABLED`` is set, the ``moderate``
+interrupt runs after support and only records a decision — it never withholds
+care. With moderation off, the distress path is simply ``support → END``.
 """
 
 # LangGraph 1.x ships incomplete type info for the StateGraph builder — its
@@ -43,6 +44,7 @@ from app.graph.nodes import (
     moderate,
     route_after_classify,
     route_after_critique,
+    route_after_support,
     support,
 )
 from app.graph.state import GraphContext, GraphState
@@ -55,8 +57,10 @@ def build_graph(
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Wire and compile the graph.
 
-    ``enable_moderation`` inserts the human-in-the-loop gate on the distress path
-    (default from config, off). Tests pass it explicitly to exercise the interrupt.
+    ``enable_moderation`` appends the non-blocking human-in-the-loop review
+    *after* the support node on the distress path (default from config). Tests
+    pass it explicitly to exercise the interrupt/resume machinery; evals can
+    leave it off, since routing and quality never depend on it.
 
     For the demo a MemorySaver checkpointer is fine. In production this is the
     single seam to swap for an async Postgres checkpointer
@@ -76,26 +80,34 @@ def build_graph(
     builder.add_node("emit", emit)
 
     builder.add_edge(START, "classify_distress")
-    if enable_moderation:
-        # Distress pauses for a moderator, then delivers the support message.
-        builder.add_node("moderate", moderate)
-        builder.add_edge("moderate", "support")
-        distress_target = "moderate"
-    else:
-        # Default: a distressed player gets the reviewed words immediately.
-        distress_target = "support"
+
+    # Distress always streams the reviewed support words first.
     builder.add_conditional_edges(
         "classify_distress",
         route_after_classify,
-        {"distress": distress_target, "generate": "generate"},
+        {"distress": "support", "generate": "generate"},
     )
+
     builder.add_edge("generate", "critique")
     builder.add_conditional_edges(
         "critique",
         route_after_critique,
         {"generate": "generate", "emit": "emit", "support": "support"},
     )
-    builder.add_edge("support", END)
     builder.add_edge("emit", END)
+
+    if enable_moderation:
+        # Human review runs *after* support has been delivered — non-blocking.
+        # Only genuine distress cases are routed into it; a support message
+        # reached via the encouragement safety-fallback just ends.
+        builder.add_node("moderate", moderate)
+        builder.add_conditional_edges(
+            "support",
+            route_after_support,
+            {"moderate": "moderate", "end": END},
+        )
+        builder.add_edge("moderate", END)
+    else:
+        builder.add_edge("support", END)
 
     return builder.compile(checkpointer=checkpointer)
