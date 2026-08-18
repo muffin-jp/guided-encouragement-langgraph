@@ -80,7 +80,9 @@ async def _stream_graph(
     graph = request.app.state.graph
     client = request.app.state.anthropic_client
     config = {"configurable": {"thread_id": thread_id}}
-    context = GraphContext(client=client)
+    # The retriever is loaded once at startup (None when RAG_ENABLED is off) and
+    # injected like the client — never checkpointed.
+    context = GraphContext(client=client, retriever=request.app.state.retriever)
 
     try:
         async for data in graph.astream(
@@ -170,7 +172,10 @@ async def resume(request: Request, thread_id: str) -> Any:
             content={"error": "No paused run for this thread."},
         )
 
-    context = GraphContext(client=request.app.state.anthropic_client)
+    context = GraphContext(
+        client=request.app.state.anthropic_client,
+        retriever=request.app.state.retriever,
+    )
     resume_value = {"approve": decision.approve, "note": decision.note}
     final_state = cast(
         "dict[str, Any]",

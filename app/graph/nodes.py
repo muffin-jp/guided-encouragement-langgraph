@@ -30,6 +30,7 @@ from app.config import (
     DISTRESS_MODEL,
     GENERATION_MODEL,
     MAX_ATTEMPTS,
+    RAG_K,
     WORD_LIMIT,
 )
 from app.graph.state import CritiqueResult, GraphContext, GraphState
@@ -130,17 +131,43 @@ async def classify_distress(state: GraphState, runtime: Runtime[GraphContext]) -
     return {"distress": True}
 
 
+async def retrieve(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
+    """Fetch reviewed grounding passages for the encouragement path.
+
+    Runs once between ``classify_distress`` and ``generate`` (only when
+    ``RAG_ENABLED`` wired it in). The passages *ground* generation — they are not
+    a script — and the critique/judge guardrail downstream remains the real gate.
+
+    Fail open to no grounding: any retriever exception (or a missing retriever)
+    is caught, logged, and returns ``{"grounding": []}``. A retrieval blip must
+    never deny a player their reply — this mirrors the judge-outage fail-open in
+    ``critique``.
+    """
+    retriever = runtime.context.retriever
+    if retriever is None:
+        logger.warning("retrieve node reached with no retriever injected; grounding empty")
+        return {"grounding": []}
+    try:
+        passages = await retriever.retrieve(state["feeling"], state.get("free_text"), k=RAG_K)
+    except Exception:
+        logger.exception("retrieval failed; falling back to no grounding")
+        return {"grounding": []}
+    return {"grounding": passages}
+
+
 async def generate(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Produce Mamorin's reply (buffered).
 
     On the reflection loop's retry, the previous critique reason is fed back so
     the next draft is corrected rather than a blind re-roll. Thinking is
     disabled and effort is low: a ~25-word reply needs no extended reasoning,
-    and this keeps latency down on the post-stage screen.
+    and this keeps latency down on the post-stage screen. Any grounding passages
+    already in state (retrieved once) are injected as reference material; the
+    reflection loop reuses them without re-retrieving.
     """
     attempts = state.get("attempts", 0)
     user_message = build_encouragement_user_message(
-        state["stage_id"], state["feeling"], state.get("free_text")
+        state["stage_id"], state["feeling"], state.get("free_text"), state.get("grounding")
     )
 
     messages: list[dict[str, str]] = [{"role": "user", "content": user_message}]
