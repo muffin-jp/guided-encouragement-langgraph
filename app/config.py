@@ -39,6 +39,33 @@ MAX_ATTEMPTS = 2
 # (distress becomes simply support -> END). The HITL machinery is always present.
 MODERATION_ENABLED = os.environ.get("MODERATION_ENABLED", "true").lower() in {"1", "true", "yes"}
 
+# --- Retrieval grounding ----------------------------------------------------
+# The retrieve node fetches a few pre-approved passages (CBT-informed coping
+# techniques, tone-approved phrasing, reviewed static responses) filtered by the
+# player's feeling and injects them into the generation prompt as *grounding, not
+# a script*. The critique/judge guardrail is unchanged and remains the real gate.
+#
+# RAG_ENABLED is the kill switch (default on), mirroring MODERATION_ENABLED. When
+# off, build_graph wires classify_distress -> generate directly — byte-for-byte
+# today's graph — and the retriever/index/embedder are never loaded at startup.
+# Flipping it off is an instant rollback to the pre-RAG behaviour, no redeploy.
+RAG_ENABLED = os.environ.get("RAG_ENABLED", "true").lower() in {"1", "true", "yes"}
+RAG_K = int(os.environ.get("RAG_K", "3"))  # passages injected as grounding
+RAG_MIN_K = int(os.environ.get("RAG_MIN_K", "2"))  # preferred floor when the corpus allows
+
+# Pinned local sentence-transformer. No third-party embedding API and no runtime
+# network to embed: the weights are vendored at build time (huggingface.co is not
+# on the runtime allow-list) and loaded with local_files_only=True, and the query
+# is embedded in-process. Pinning by revision freezes one snapshot so the index is
+# reproducible — that reproducibility *is* the defensibility story. The model's
+# weights have not changed since 2021; later commits only add file formats, so
+# embeddings are identical across revisions. Verify/refresh the full SHA with:
+#   git ls-remote https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 refs/heads/main
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBED_MODEL_REVISION = (
+    "ea78891063587eb050ed4166b20062eaf978037c"  # pinned HF commit (verify at build)
+)
+
 # --- Rate limiting ----------------------------------------------------------
 RATE_LIMIT = "10/minute"
 RATE_LIMIT_RETRY_AFTER = "60"
