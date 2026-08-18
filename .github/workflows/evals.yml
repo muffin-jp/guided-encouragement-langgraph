@@ -9,6 +9,7 @@ on:
     paths:
       - "app/prompts/**"
       - "app/graph/**"
+      - "app/rag/**"
       - "app/config.py"
       - "evals/**"
       - ".github/workflows/evals.yml"
@@ -28,10 +29,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
-      - name: Sync dependencies
-        run: uv sync
+      - name: Sync dependencies (incl. rag embedder)
+        run: uv sync --extra rag
 
-      - name: Run eval suite (real API)
+      # Vendors the pinned weights (network open here) AND fails if the committed
+      # index.npz is out of date with corpus.jsonl — a corpus edit can't land
+      # without its rebuilt index. Leaves the weights in place for the real eval.
+      - name: Verify retrieval index matches corpus
+        run: make check-index
+
+      - name: Run eval suite (real API, grounded)
         run: uv run python evals/run.py
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
