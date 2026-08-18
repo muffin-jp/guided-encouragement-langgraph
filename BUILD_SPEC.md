@@ -1,4 +1,7 @@
-# Build spec — Bloom "Guided Encouragement" (Python / FastAPI / LangGraph)
+# Overview
+The design specification this service was built from, written as a brief for an AI coding agent and revised across two review passes
+
+## Build spec — Bloom "Guided Encouragement" (Python / FastAPI / LangGraph)
 
 You are building a Python port of an existing TypeScript/Next.js service. The goal is a
 **production-shaped FastAPI service that runs a LangGraph orchestration graph** for a wellness
@@ -8,7 +11,7 @@ not a wrapper around an `if` statement — and the code should read as idiomatic
 
 ## Source material to port
 
-The original TypeScript repo is available in this workspace (ask me for the path if you don't see it).
+The original TypeScript [repo](https://github.com/muffin-jp/llm-guided-encouragement) is available in this workspace (ask me for the path if you don't see it).
 **Copy these verbatim — do not paraphrase, they are reviewed product content:**
 
 - `../guided-encouragement/lib/prompts/encouragement.ts` → the Mamorin generation system prompt + the user-message builder.
