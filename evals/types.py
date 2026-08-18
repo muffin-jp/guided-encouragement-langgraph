@@ -49,5 +49,8 @@ class CaseResult:
     non_empty: bool
     # None on the support path (the static message is not judged).
     judge: JudgeScores | None
+    # Passages retrieved as grounding on the encouragement path (None on support,
+    # or when RAG is off). Feeds the retrieval-count report so corpus gaps show.
+    grounding_count: int | None = None
     # Set when the pipeline or judge errored irrecoverably.
     error: str | None = None
