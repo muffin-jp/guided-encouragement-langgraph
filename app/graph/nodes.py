@@ -53,12 +53,15 @@ logger = logging.getLogger("bloom.graph")
 # obvious injection / clinical failures without an LLM call; the judge is the
 # real guardrail behind them. Kept conservative to avoid false positives on
 # good replies (note: the feeling words like "anxious" are deliberately absent).
+# Injection *personas* (e.g. "pirate") are deliberately NOT listed: the word is
+# ordinary English a good reply uses to *decline* the injection ("no pirate
+# costume for me"), so a regex can't tell refusal from compliance. The judge
+# can, and its rubric already fails genuine "you are now a pirate" compliance.
 _RED_FLAG_RE = re.compile(
     r"\b("
     r"hacked"  # injection compliance
     r"|as an? (?:unrestricted )?ai"
     r"|system prompt"
-    r"|pirate"
     r"|diagnos\w*"  # clinical / therapy-speak
     r"|therap(?:y|ist)"
     r"|clinical\w*"
