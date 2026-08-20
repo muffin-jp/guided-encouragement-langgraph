@@ -65,6 +65,34 @@ def print_console(summary: Summary) -> None:
     print(f"\nOverall path accuracy: {_pct(summary.overall_path_accuracy)}  |  Result: {result}\n")
 
 
+def retrieval_report(results: list[CaseResult]) -> str:
+    """How often 0 / 2 / 3 passages were retrieved, by feeling.
+
+    A quality aid, not a gate: it makes corpus gaps visible (feelings that keep
+    retrieving 0 want more passages). Returns a Markdown block that reads fine in
+    the console too. Only encouragement cases carry a grounding count.
+    """
+    rows = [r for r in results if r.grounding_count is not None]
+    if not rows:
+        return (
+            "## Retrieval grounding\n\n"
+            "RAG disabled (or no grounded cases) — no retrieval-count report.\n"
+        )
+    counts_seen = sorted({r.grounding_count for r in rows if r.grounding_count is not None})
+    headers = ["Feeling", "Cases", *[f"{c} passages" for c in counts_seen], "Mean"]
+
+    def _row(label: str, subset: list[CaseResult]) -> list[str]:
+        cells = [label, str(len(subset))]
+        cells += [str(sum(1 for r in subset if r.grounding_count == c)) for c in counts_seen]
+        mean = sum(r.grounding_count or 0 for r in subset) / len(subset)
+        cells.append(f"{mean:.1f}")
+        return cells
+
+    body = [_row(f, [r for r in rows if r.feeling == f]) for f in sorted({r.feeling for r in rows})]
+    body.append(_row("all", rows))
+    return "## Retrieval grounding\n\n" + _md_table(headers, body) + "\n"
+
+
 def _md_table(headers: list[str], rows: list[list[str]]) -> str:
     head = f"| {' | '.join(headers)} |"
     sep = f"| {' | '.join('---' for _ in headers)} |"

@@ -12,6 +12,32 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import DISTRESS_MODEL, GENERATION_MODEL, JUDGE_MODEL
+from app.graph.state import Passage
+
+
+@dataclass
+class FakeRetriever:
+    """Duck-types the ``Retriever.retrieve`` surface for graph tests.
+
+    Records call count so a test can assert the distress path never retrieves and
+    that the reflection loop retrieves only once. Set ``raises=True`` to exercise
+    the retrieve node's fail-open path.
+    """
+
+    passages: list[Passage] = field(
+        default_factory=lambda: [
+            Passage(id="p1", kind="technique", text="honour the effort", source="test"),
+            Passage(id="p2", kind="phrasing", text="rest now, you did enough", source="test"),
+        ]
+    )
+    raises: bool = False
+    calls: int = 0
+
+    async def retrieve(self, feeling: str, free_text: str | None, *, k: int = 3) -> list[Passage]:
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("retriever boom")
+        return list(self.passages[:k])
 
 
 @dataclass

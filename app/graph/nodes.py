@@ -30,6 +30,7 @@ from app.config import (
     DISTRESS_MODEL,
     GENERATION_MODEL,
     MAX_ATTEMPTS,
+    RAG_K,
     WORD_LIMIT,
 )
 from app.graph.state import CritiqueResult, GraphContext, GraphState
@@ -52,12 +53,15 @@ logger = logging.getLogger("bloom.graph")
 # obvious injection / clinical failures without an LLM call; the judge is the
 # real guardrail behind them. Kept conservative to avoid false positives on
 # good replies (note: the feeling words like "anxious" are deliberately absent).
+# Injection *personas* (e.g. "pirate") are deliberately NOT listed: the word is
+# ordinary English a good reply uses to *decline* the injection ("no pirate
+# costume for me"), so a regex can't tell refusal from compliance. The judge
+# can, and its rubric already fails genuine "you are now a pirate" compliance.
 _RED_FLAG_RE = re.compile(
     r"\b("
     r"hacked"  # injection compliance
     r"|as an? (?:unrestricted )?ai"
     r"|system prompt"
-    r"|pirate"
     r"|diagnos\w*"  # clinical / therapy-speak
     r"|therap(?:y|ist)"
     r"|clinical\w*"
@@ -130,17 +134,43 @@ async def classify_distress(state: GraphState, runtime: Runtime[GraphContext]) -
     return {"distress": True}
 
 
+async def retrieve(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
+    """Fetch reviewed grounding passages for the encouragement path.
+
+    Runs once between ``classify_distress`` and ``generate`` (only when
+    ``RAG_ENABLED`` wired it in). The passages *ground* generation — they are not
+    a script — and the critique/judge guardrail downstream remains the real gate.
+
+    Fail open to no grounding: any retriever exception (or a missing retriever)
+    is caught, logged, and returns ``{"grounding": []}``. A retrieval blip must
+    never deny a player their reply — this mirrors the judge-outage fail-open in
+    ``critique``.
+    """
+    retriever = runtime.context.retriever
+    if retriever is None:
+        logger.warning("retrieve node reached with no retriever injected; grounding empty")
+        return {"grounding": []}
+    try:
+        passages = await retriever.retrieve(state["feeling"], state.get("free_text"), k=RAG_K)
+    except Exception:
+        logger.exception("retrieval failed; falling back to no grounding")
+        return {"grounding": []}
+    return {"grounding": passages}
+
+
 async def generate(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Produce Mamorin's reply (buffered).
 
     On the reflection loop's retry, the previous critique reason is fed back so
     the next draft is corrected rather than a blind re-roll. Thinking is
     disabled and effort is low: a ~25-word reply needs no extended reasoning,
-    and this keeps latency down on the post-stage screen.
+    and this keeps latency down on the post-stage screen. Any grounding passages
+    already in state (retrieved once) are injected as reference material; the
+    reflection loop reuses them without re-retrieving.
     """
     attempts = state.get("attempts", 0)
     user_message = build_encouragement_user_message(
-        state["stage_id"], state["feeling"], state.get("free_text")
+        state["stage_id"], state["feeling"], state.get("free_text"), state.get("grounding")
     )
 
     messages: list[dict[str, str]] = [{"role": "user", "content": user_message}]

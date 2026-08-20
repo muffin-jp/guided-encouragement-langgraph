@@ -22,21 +22,28 @@ the safety design legible and testable:
               ┌───────────────-------┘    └───────────────────┐
               ▼                                                ▼
         ┌───────────┐                                    ┌──────────┐
-        │  support  │  static, reviewed words            │ generate │ ◄────────┐
-        │           │  streamed immediately              └────┬─────┘          │
-        └─────┬─────┘                                         ▼                │ regenerate
-              │                                          ┌──────────┐          │ with critique
-  MODERATION_ENABLED=0 ── off ──┐  (skip review)         │ critique │          │ as feedback
-              │ on (default)     │                       └────┬─────┘          │
-              ▼                   │                  pass │ fail & attempts<2 ──┘
-        ┌───────────┐             │                       │
-        │ moderate  │ interrupt/  │                       │  fail & exhausted:
-        │(non-block)│ resume;     │                       │   safety → support
-        └─────┬─────┘ records     │                       │   else   → best-effort draft
-              │       decision    │                       ▼
-              ▼                    ▼            emit (stream approved draft)
-             END ◄────────────────┴───────────────────────┴──► END
+        │  support  │  static, reviewed words            │ retrieve │  RAG on: grounding from
+        │           │  streamed immediately              └────┬─────┘  the vetted corpus
+        └─────┬─────┘                                         ▼        (RAG off: node skipped)
+              │                                          ┌──────────┐
+  MODERATION_ENABLED=0 ── off ──┐  (skip review)         │ generate │ ◄────────┐
+              │ on (default)     │                       └────┬─────┘          │ regenerate with
+              ▼                   │                            ▼               │ critique as feedback
+        ┌───────────┐             │                       ┌──────────┐         │ (same grounding
+        │ moderate  │ interrupt/  │                       │ critique │         │  reused — no
+        │(non-block)│ resume;     │                       └────┬─────┘         │  re-retrieval)
+        └─────┬─────┘ records     │                  pass │ fail & attempts<2 ─┘
+              │       decision    │                       │
+              │                   │                       │  fail & exhausted:
+              ▼                   │                       │   safety → support
+             END ◄───────────────┘                       │   else   → best-effort draft
+                                                          ▼
+                                            emit (stream approved draft) ──► END
 ```
+
+Retrieval runs **once** on the encouragement branch (`classify_distress → retrieve → generate`);
+the reflection loop returns to `generate`, reusing the same grounding. The distress branch is
+untouched — retrieval never runs there.
 
 The distress path streams the reviewed **support** words *first*; the optional human-review pause
 happens *after*, so a person in a hard moment never waits on a moderator. Three things this design
@@ -65,6 +72,23 @@ feedback. The loop is **bounded by `MAX_ATTEMPTS` (2)** and can never run foreve
 best-available draft, truncated to the word limit. `tests/test_graph.py` asserts termination. If the
 judge itself is unreachable, `critique` **fails open** to the draft that already cleared the
 deterministic safety checks (logged) rather than denying the player a reply over an availability blip.
+
+### Grounded generation (retrieval)
+
+On the encouragement branch, a `retrieve` node runs once before `generate` and fetches a few
+**pre-approved passages** — CBT-informed coping techniques, tone-approved phrasing, reviewed static
+responses — from a small **100% human-reviewed corpus** (`app/rag/corpus.jsonl`), filtered by the
+player's feeling. They are injected into the prompt as clearly-labelled reference material — as
+**grounding, not a script**: Mamorin still writes the reply in its own voice, never quoting the
+material. The critique node + LLM judge remain the **enforced gate**, unchanged; grounding is a
+quality aid in front of that gate, not a replacement for it. Retrieval is **in-process with no
+request-time network**: the query is embedded by a pinned local model and ranked by cosine
+similarity against an offline-built index (see [Models](#models-appconfigpy)). It **fails open to
+empty grounding** — any retriever blip is logged and the reply is generated exactly as it is today —
+so this feature can never make a player wait or miss a reply. The **distress path is deliberately
+excluded**: crisis replies stay the fixed reviewed `SUPPORT_MESSAGE`, never RAG-generated. The kill
+switch **`RAG_ENABLED`** (default on) drops the node entirely for an instant rollback to the exact
+pre-RAG graph. Both branches are covered in `tests/test_graph.py`.
 
 ### Human-in-the-loop moderation (non-blocking)
 
@@ -149,6 +173,20 @@ cp .env.example .env      # add your ANTHROPIC_API_KEY
 uv run uvicorn app.main:app --reload
 ```
 
+**Retrieval grounding (`RAG_ENABLED`, on by default)** needs a one-time setup: install the embedder
+extra and build the index (this downloads the pinned model weights once — the only time the network
+is touched for retrieval):
+
+```bash
+uv sync --extra rag       # the local sentence-transformer embedder
+make build-index          # vendors the pinned weights + writes app/rag/index.npz
+```
+
+`index.npz` is committed and **must match the current `app/rag/corpus.jsonl`** — `make check-index`
+(run in CI) fails if a corpus edit landed without its rebuilt index. Prefer not to touch retrieval?
+Set `RAG_ENABLED=0` and neither the extra nor the build step is needed — the app runs its exact
+pre-RAG graph.
+
 ```bash
 # quick smoke test (streams SSE)
 curl -N -X POST localhost:8000/api/encourage \
@@ -161,7 +199,7 @@ Without a key the app still starts and returns a friendly `503` (see `/healthz`)
 ## Tests, lint, types
 
 ```bash
-uv run pytest            # schema validation, SSE framing, graph routing + loop termination
+uv run pytest            # schemas, SSE framing, graph routing + loop, retrieval, prompt grounding
 uv run ruff check .      # lint (+ `ruff format --check .`)
 uv run pyright           # strict mode
 ```
@@ -190,15 +228,23 @@ replies with the LLM-as-judge and **fails the build if quality or safety regress
 
 ```bash
 uv run python evals/run.py          # real run (needs ANTHROPIC_API_KEY)
-uv run python evals/run.py --dry    # offline fixture: exercises routing, the loop,
+uv run python evals/run.py --dry    # offline fixture: exercises routing, the loop, retrieval,
                                      # the gate, and the report writers with no API calls
 ```
 
-Both `evals/results/latest.json` (full per-case detail) and `latest.md` (summary table) are written
-each run; the process exits non-zero when the gate isn't met. `.github/workflows/evals.yml` runs the
-real suite on PRs that touch prompts, the graph, or `evals/**` (plus `workflow_dispatch`), using the
-`ANTHROPIC_API_KEY` repo secret, and uploads the results as an artifact. `ci.yml` runs lint, types,
-tests, and the dry eval on every push — no key required.
+When `RAG_ENABLED` is on the eval runs the **grounded** graph (the real index + local embedder;
+`--dry` uses an offline stub embedder over the real corpus so retrieval is still exercised). The
+thresholds above are the gate; **grounding is a quality aid, so the bar is non-regression** — empathy
+and tone must not drop and the safety pass-rate stays 100%. Each run also writes a **retrieval-count
+report** (how often 0 / 2 / 3 passages were retrieved, by feeling) so corpus gaps are visible.
+
+Both `evals/results/latest.json` (full per-case detail) and `latest.md` (summary table + retrieval
+report) are written each run; the process exits non-zero when the gate isn't met.
+`.github/workflows/evals.yml` runs the real suite on PRs that touch prompts, the graph, `app/rag/**`,
+or `evals/**` (plus `workflow_dispatch`) — it syncs the `rag` extra, runs `make check-index` (which
+vendors the pinned weights and guards the committed index), then runs the gated suite with the
+`ANTHROPIC_API_KEY` repo secret and uploads the results. `ci.yml` runs lint, types, tests, and the
+dry eval on every push — no key, no model download required.
 
 ## Models (`app/config.py`)
 
@@ -207,6 +253,23 @@ tests, and the dry eval on every push — no key required.
 - **Judge** — `claude-sonnet-4-6` at **temperature 0**: deliberately this model because it still
   accepts sampling params (the generation model rejects them), so temperature 0 gives a reproducible
   grader.
+- **Grounding embedder** — `sentence-transformers/all-MiniLM-L6-v2`, a **pinned local** model
+  (`EMBED_MODEL` / `EMBED_MODEL_REVISION`, 384-dim). **Local, offline, no request-time network**:
+  the weights are **vendored at build time** (`make build-index`) because the runtime network is
+  locked to `api.anthropic.com`, and the query is embedded in-process with `local_files_only=True`.
+  Pinning by revision keeps the offline-built index reproducible — that reproducibility is the
+  defensibility story. Swappable behind the `Embedder` protocol (e.g. `fastembed`/onnx).
+
+### Tunables (`app/config.py`)
+
+Alongside `WORD_LIMIT`, `MAX_ATTEMPTS`, and `MODERATION_ENABLED`:
+
+- **`RAG_ENABLED`** — retrieval-grounding kill switch, **default on** (mirrors `MODERATION_ENABLED`).
+  `RAG_ENABLED=0` returns the app to its **exact pre-RAG behaviour** with no code change and no
+  redeploy — the `retrieve` node isn't wired and no index/embedder is loaded.
+- **`RAG_K`** (default 3) — passages injected as grounding · **`RAG_MIN_K`** (default 2) — preferred
+  floor when the corpus has that many.
+- **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above.
 
 ## Layout
 
@@ -220,14 +283,20 @@ app/
   ratelimit.py       # slowapi limiter
   llm.py             # AsyncAnthropic client factory
   graph/
-    state.py         # typed graph state + injected runtime context
-    nodes.py         # classify_distress, generate, critique, moderate, support, emit
+    state.py         # typed graph state + injected runtime context (client, retriever)
+    nodes.py         # classify_distress, retrieve, generate, critique, moderate, support, emit
     build.py         # StateGraph wiring, conditional edges, compile(checkpointer=…)
   prompts/           # encouragement, distress, support — ported verbatim
+  rag/
+    corpus.jsonl     # the vetted, 100%-human-reviewed grounding passages (audit surface)
+    build_index.py   # offline deterministic index build (+ --check CI guard)
+    embedder.py      # Embedder protocol + pinned local sentence-transformer
+    retriever.py     # filter-by-feeling + cosine rank over index.npz
+    index.npz        # committed, offline-built vectors (model/ weights are vendored, git-ignored)
 evals/
-  run.py judge.py thresholds.py report.py dry_client.py types.py dataset.jsonl results/
+  run.py judge.py thresholds.py report.py dry_client.py stub_embedder.py types.py dataset.jsonl results/
 tests/
-  test_schemas.py test_graph.py test_sse.py
+  test_schemas.py test_graph.py test_sse.py test_retriever.py test_prompts.py
 ```
 
 ## Non-goals

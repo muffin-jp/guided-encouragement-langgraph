@@ -10,11 +10,29 @@ checkpointed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Required, TypedDict
+from typing import TYPE_CHECKING, Required, TypedDict
 
 from anthropic import AsyncAnthropic
 
 from app.sse import ResponseKind
+
+if TYPE_CHECKING:
+    # Type-only import to keep the runtime dependency one-way (retriever imports
+    # Passage from here) and to avoid loading the rag package when RAG is off.
+    from app.rag.retriever import Retriever
+
+
+class Passage(TypedDict):
+    """One reviewed grounding passage, as surfaced to the generation prompt.
+
+    The retriever's corpus record also carries ``feelings`` tags for filtering;
+    those are internal and are stripped out before a passage reaches state.
+    """
+
+    id: str
+    kind: str
+    text: str
+    source: str
 
 
 @dataclass
@@ -23,9 +41,12 @@ class GraphContext:
 
     Passing the client here (not in state) keeps credentials out of the
     checkpointer and lets tests inject a mock without patching module globals.
+    The retriever is injected the same way (loaded once at startup, never
+    checkpointed); it is ``None`` when ``RAG_ENABLED`` is off.
     """
 
     client: AsyncAnthropic
+    retriever: Retriever | None = None
 
 
 class CritiqueResult(TypedDict):
@@ -52,6 +73,12 @@ class GraphState(TypedDict, total=False):
 
     # --- classification ---
     distress: bool | None
+
+    # --- retrieval grounding ---
+    # 0–RAG_K reviewed passages injected into generation as grounding; [] when
+    # none matched or retrieval failed open. Retrieved once, reused across the
+    # reflection loop's retries (no re-retrieval per attempt).
+    grounding: list[Passage]
 
     # --- generation / reflection loop ---
     draft: str

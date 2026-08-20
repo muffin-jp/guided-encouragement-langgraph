@@ -27,12 +27,13 @@ from typing import Any
 import anthropic
 from dotenv import load_dotenv
 
+from app.config import RAG_ENABLED
 from app.graph.build import build_graph
 from app.graph.state import GraphContext
 from app.llm import build_anthropic_client
 from evals.dry_client import create_dry_client
 from evals.judge import judge_encouragement
-from evals.report import print_console, render_markdown
+from evals.report import print_console, render_markdown, retrieval_report
 from evals.thresholds import evaluate
 from evals.types import CaseResult, EvalCase
 
@@ -93,14 +94,17 @@ async def _with_retry(coro_factory: Any) -> Any:
     raise last
 
 
-async def _run_graph(graph: Any, client: Any, case: EvalCase) -> tuple[str, str]:
+async def _run_graph(
+    graph: Any, client: Any, retriever: Any, case: EvalCase
+) -> tuple[str, str, int | None]:
     """Invoke the graph for one case, auto-resuming the moderation interrupt.
 
-    Returns (path, text). Each case gets its own thread id so runs never share
-    checkpointed state.
+    Returns (path, text, grounding_count). Each case gets its own thread id so
+    runs never share checkpointed state. ``grounding_count`` is None on the
+    support path (and when RAG is off), else the number of passages retrieved.
     """
     config = {"configurable": {"thread_id": f"eval-{case.id}-{uuid.uuid4().hex}"}}
-    context = GraphContext(client=client)
+    context = GraphContext(client=client, retriever=retriever)
     graph_input: dict[str, Any] = {
         "stage_id": STAGE_ID,
         "feeling": case.feeling,
@@ -119,12 +123,16 @@ async def _run_graph(graph: Any, client: Any, case: EvalCase) -> tuple[str, str]
             config=config,
             context=context,
         )
-    return result["path"], result.get("final_text", "")
+    grounding = result.get("grounding") if result["path"] == "encouragement" else None
+    grounding_count = len(grounding) if grounding is not None else None
+    return result["path"], result.get("final_text", ""), grounding_count
 
 
-async def run_case(graph: Any, client: Any, case: EvalCase) -> CaseResult:
+async def run_case(graph: Any, client: Any, retriever: Any, case: EvalCase) -> CaseResult:
     try:
-        actual_path, text = await _with_retry(lambda: _run_graph(graph, client, case))
+        actual_path, text, grounding_count = await _with_retry(
+            lambda: _run_graph(graph, client, retriever, case)
+        )
         words = word_count(text)
         is_encouragement = actual_path == "encouragement"
 
@@ -148,6 +156,7 @@ async def run_case(graph: Any, client: Any, case: EvalCase) -> CaseResult:
             word_limit_ok=(words <= 40) if is_encouragement else None,
             non_empty=bool(text.strip()),
             judge=judge,
+            grounding_count=grounding_count,
         )
     except BaseException as err:  # noqa: BLE001 - recorded as a case error
         return CaseResult(
@@ -167,7 +176,9 @@ async def run_case(graph: Any, client: Any, case: EvalCase) -> CaseResult:
         )
 
 
-async def _map_pool(cases: list[EvalCase], graph: Any, client: Any) -> list[CaseResult]:
+async def _map_pool(
+    cases: list[EvalCase], graph: Any, client: Any, retriever: Any
+) -> list[CaseResult]:
     """Bounded worker pool; preserves input order in the results list."""
     results: list[CaseResult | None] = [None] * len(cases)
     semaphore = asyncio.Semaphore(CONCURRENCY)
@@ -176,13 +187,46 @@ async def _map_pool(cases: list[EvalCase], graph: Any, client: Any) -> list[Case
     async def worker(i: int, case: EvalCase) -> None:
         nonlocal done
         async with semaphore:
-            results[i] = await run_case(graph, client, case)
+            results[i] = await run_case(graph, client, retriever, case)
             done += 1
             print(f"\r  {done}/{len(cases)} cases complete", end="", flush=True)
 
     await asyncio.gather(*(worker(i, c) for i, c in enumerate(cases)))
     print()
     return [r for r in results if r is not None]
+
+
+def build_retriever() -> Any | None:
+    """Construct the retriever the eval graph will use, matching production.
+
+    RAG off → None (no retrieve node is wired anyway). Dry → an offline stub
+    embedder over the *real* corpus, so the retrieve node and the retrieval-count
+    report are exercised without weights or network. Real → the pinned local
+    model over the committed index; if the weights aren't vendored we fall open to
+    no grounding (mirroring the app's startup fail-open) rather than aborting.
+    """
+    if not RAG_ENABLED:
+        return None
+    if DRY:
+        from app.rag.build_index import load_corpus
+        from app.rag.retriever import Retriever
+        from evals.stub_embedder import StubEmbedder
+
+        records = load_corpus()
+        embedder = StubEmbedder()
+        vectors = embedder.embed([r["text"] for r in records])
+        return Retriever(vectors, records, embedder)
+    try:
+        from app.rag.embedder import load_embedder
+        from app.rag.retriever import INDEX_PATH, Retriever
+
+        return Retriever.from_files(INDEX_PATH, load_embedder())
+    except Exception as err:  # noqa: BLE001 - non-fatal; grounding just goes empty
+        print(
+            f"warning: could not load retriever ({err}); running without grounding.",
+            file=sys.stderr,
+        )
+        return None
 
 
 def build_client() -> Any:
@@ -202,10 +246,16 @@ def build_client() -> Any:
 async def main() -> None:
     client = build_client()
     graph = build_graph()
+    retriever = build_retriever()
     cases = load_dataset()
-    print(f"Running {len(cases)} eval cases (concurrency {CONCURRENCY})...")
+    grounding_note = (
+        "on" if retriever is not None else ("off" if not RAG_ENABLED else "unavailable")
+    )
+    print(
+        f"Running {len(cases)} eval cases (concurrency {CONCURRENCY}); grounding {grounding_note}."
+    )
 
-    results = await _map_pool(cases, graph, client)
+    results = await _map_pool(cases, graph, client, retriever)
     summary = evaluate(results)
     generated_at = datetime.now(UTC).isoformat()
 
@@ -224,9 +274,13 @@ async def main() -> None:
         encoding="utf-8",
     )
     label = f"{generated_at} (dry fixture — not real scores)" if DRY else generated_at
-    (RESULTS_DIR / "latest.md").write_text(render_markdown(summary, label), encoding="utf-8")
+    retrieval_md = retrieval_report(results)
+    (RESULTS_DIR / "latest.md").write_text(
+        render_markdown(summary, label) + "\n" + retrieval_md, encoding="utf-8"
+    )
 
     print_console(summary)
+    print(retrieval_md)
     print("Wrote evals/results/latest.json and latest.md")
 
     if hasattr(client, "close"):

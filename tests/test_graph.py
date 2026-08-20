@@ -18,7 +18,7 @@ from langgraph.types import Command
 from app.config import DISTRESS_MODEL, GENERATION_MODEL, MAX_ATTEMPTS
 from app.graph.build import build_graph
 from app.graph.state import GraphContext
-from tests.fakes import FakeClient
+from tests.fakes import FakeClient, FakeRetriever
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,11 +29,22 @@ async def _run(
     free_text: str | None,
     *,
     enable_moderation: bool = False,
+    enable_rag: bool = False,
+    retriever: FakeRetriever | None = None,
 ) -> dict[str, Any]:
-    """Invoke the graph once, auto-resuming a moderation interrupt if it pauses."""
-    graph: Any = build_graph(enable_moderation=enable_moderation)
+    """Invoke the graph once, auto-resuming a moderation interrupt if it pauses.
+
+    RAG is off by default so these routing/loop tests stay pinned to the pre-RAG
+    graph; the RAG-specific tests opt in with ``enable_rag=True`` and a retriever.
+    """
+    graph: Any = build_graph(enable_moderation=enable_moderation, enable_rag=enable_rag)
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
-    context = GraphContext(client=cast(AsyncAnthropic, client))
+    # FakeRetriever duck-types Retriever's async retrieve surface (the node only
+    # calls that); cast past the concrete-class annotation like the client above.
+    context = GraphContext(
+        client=cast(AsyncAnthropic, client),
+        retriever=cast("Any", retriever),
+    )
     result = await graph.ainvoke(
         {"stage_id": "s1", "feeling": feeling, "free_text": free_text, "attempts": 0},
         config=config,
@@ -153,3 +164,66 @@ async def test_unparseable_distress_fails_safe_to_support() -> None:
     client.messages.create = bad_create  # type: ignore[assignment]
     result = await _run(client, "custom", "ambiguous note here")
     assert result["path"] == "support"
+
+
+# --- retrieval grounding ----------------------------------------------------
+
+
+async def test_rag_populates_grounding() -> None:
+    # With RAG on, retrieve runs before generate and its passages land in state.
+    draft = "It makes sense to feel frustrated. Rest now, I'm proud of you."
+    client = FakeClient(distress=False, drafts=[draft])
+    retriever = FakeRetriever()
+    result = await _run(
+        client, "frustrated", "so close that time", enable_rag=True, retriever=retriever
+    )
+    assert retriever.calls == 1
+    assert [p["id"] for p in result["grounding"]] == ["p1", "p2"]
+    assert result["path"] == "encouragement"
+    assert result["final_text"] == draft
+
+
+async def test_rag_retriever_exception_fails_open_and_still_emits() -> None:
+    # A retrieval blip must never deny a reply: grounding is [] and the run still
+    # reaches emit with a real draft.
+    draft = "It makes sense to feel tired. Rest now, I'm proud of you."
+    client = FakeClient(distress=False, drafts=[draft])
+    retriever = FakeRetriever(raises=True)
+    result = await _run(client, "tired", "long day", enable_rag=True, retriever=retriever)
+    assert result["grounding"] == []
+    assert result["path"] == "encouragement"
+    assert result["final_text"] == draft
+
+
+async def test_rag_distress_path_never_retrieves() -> None:
+    # Distress is deliberately excluded from grounding — retrieval is off the
+    # support branch entirely.
+    client = FakeClient(distress=True)
+    retriever = FakeRetriever()
+    result = await _run(
+        client, "custom", "I feel hopeless and alone", enable_rag=True, retriever=retriever
+    )
+    assert retriever.calls == 0
+    assert result["path"] == "support"
+
+
+async def test_rag_grounding_retrieved_once_across_reflection_loop() -> None:
+    # The regeneration loop reuses the same grounding — no re-retrieval on retry.
+    long_draft = " ".join(["word"] * 50)  # trips the word-limit regeneration
+    good_draft = "It makes sense to feel proud. Rest now, I'm proud of you."
+    client = FakeClient(distress=False, drafts=[long_draft, good_draft])
+    retriever = FakeRetriever()
+    result = await _run(client, "proud", "did it", enable_rag=True, retriever=retriever)
+    assert client.calls_to(GENERATION_MODEL) == 2  # looped once
+    assert retriever.calls == 1  # but retrieved only once
+    assert result["final_text"] == good_draft
+
+
+async def test_rag_off_leaves_graph_shape_unchanged() -> None:
+    # RAG off: no retrieve node, no grounding in state, no retriever needed.
+    draft = "It makes sense to feel proud. Rest now, I'm proud of you."
+    client = FakeClient(distress=False, drafts=[draft])
+    result = await _run(client, "proud", None, enable_rag=False)
+    assert "grounding" not in result  # node never ran
+    assert result["path"] == "encouragement"
+    assert result["final_text"] == draft

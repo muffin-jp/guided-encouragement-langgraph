@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import router
-from app.config import CORS_ALLOW_ORIGIN_REGEX, CORS_ALLOW_ORIGINS, langsmith_enabled
+from app.config import CORS_ALLOW_ORIGIN_REGEX, CORS_ALLOW_ORIGINS, RAG_ENABLED, langsmith_enabled
 from app.graph.build import build_graph
 from app.llm import build_anthropic_client
 from app.ratelimit import limiter, rate_limit_exceeded_handler
@@ -40,6 +40,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Compile the graph once (MemorySaver for the demo — see build_graph for the
     # production Postgres seam).
     app.state.graph = build_graph()
+
+    # Retrieval grounding: load the index + pinned local embedder once, only when
+    # RAG is on. When off, nothing here loads (no torch/onnx import, no vendored
+    # weights needed) and the retriever stays None — the graph has no retrieve node.
+    app.state.retriever = None
+    if RAG_ENABLED:
+        try:
+            from app.rag.embedder import load_embedder
+            from app.rag.retriever import INDEX_PATH, Retriever
+
+            app.state.retriever = Retriever.from_files(INDEX_PATH, load_embedder())
+            logger.info("retrieval grounding enabled (index + local embedder loaded)")
+        except Exception:
+            # Fail open: a startup problem loading retrieval must not take the
+            # service down. The retrieve node fails open to empty grounding, so
+            # the app simply behaves as pre-RAG until the index/weights are fixed.
+            logger.exception("failed to load retriever; continuing with no grounding")
 
     try:
         app.state.anthropic_client = build_anthropic_client()

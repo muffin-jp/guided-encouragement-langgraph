@@ -9,11 +9,15 @@ interrupt durable — the graph pauses, persists, and resumes on the /resume cal
           ├─ distress → support ─(stream reviewed words immediately)
           │              ├─ moderate ─(interrupt/resume, non-blocking)→ END   [moderation on]
           │              └─ END                                                [moderation off]
-          └─ else     → generate → critique
-                                     ├─ pass                     → emit  → END
-                                     ├─ fail & attempts left     → generate  (loop)
-                                     ├─ fail, spent, safety fail → support → …
-                                     └─ fail, spent, otherwise   → emit  → END
+          └─ else     → retrieve → generate → critique                        [retrieve: RAG on]
+              (RAG off: classify → generate)  ├─ pass                     → emit  → END
+                                              ├─ fail & attempts left     → generate  (loop)
+                                              ├─ fail, spent, safety fail → support → …
+                                              └─ fail, spent, otherwise   → emit  → END
+
+Retrieval runs once on the encouragement branch (grounding, not a script); the
+reflection loop (critique → generate) reuses the same grounding without
+re-retrieving. RAG_ENABLED=0 drops the retrieve node entirely.
 
 Support always streams *before* any human review, so a distressed player never
 waits on a moderator. When ``MODERATION_ENABLED`` is set, the ``moderate``
@@ -35,13 +39,14 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.config import MODERATION_ENABLED
+from app.config import MODERATION_ENABLED, RAG_ENABLED
 from app.graph.nodes import (
     classify_distress,
     critique,
     emit,
     generate,
     moderate,
+    retrieve,
     route_after_classify,
     route_after_critique,
     route_after_support,
@@ -54,6 +59,7 @@ def build_graph(
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     *,
     enable_moderation: bool = MODERATION_ENABLED,
+    enable_rag: bool = RAG_ENABLED,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Wire and compile the graph.
 
@@ -61,6 +67,13 @@ def build_graph(
     *after* the support node on the distress path (default from config). Tests
     pass it explicitly to exercise the interrupt/resume machinery; evals can
     leave it off, since routing and quality never depend on it.
+
+    ``enable_rag`` inserts the ``retrieve`` node on the encouragement branch
+    (``classify_distress → retrieve → generate``) so generation is grounded in
+    the vetted corpus (default from config). When off, the classify branch maps
+    straight to ``generate`` — byte-for-byte today's graph — and no retriever,
+    index, or embedder is loaded. ``RAG_ENABLED=0`` is thus an instant rollback
+    to the pre-RAG behaviour with no code change.
 
     For the demo a MemorySaver checkpointer is fine. In production this is the
     single seam to swap for an async Postgres checkpointer
@@ -81,12 +94,24 @@ def build_graph(
 
     builder.add_edge(START, "classify_distress")
 
-    # Distress always streams the reviewed support words first.
-    builder.add_conditional_edges(
-        "classify_distress",
-        route_after_classify,
-        {"distress": "support", "generate": "generate"},
-    )
+    # Distress always streams the reviewed support words first. On the
+    # encouragement branch, retrieval (when enabled) runs once before generate;
+    # the router's return values are unchanged (so route_after_classify tests
+    # don't break) — only the "generate" label's target moves to "retrieve".
+    if enable_rag:
+        builder.add_node("retrieve", retrieve)
+        builder.add_conditional_edges(
+            "classify_distress",
+            route_after_classify,
+            {"distress": "support", "generate": "retrieve"},
+        )
+        builder.add_edge("retrieve", "generate")
+    else:
+        builder.add_conditional_edges(
+            "classify_distress",
+            route_after_classify,
+            {"distress": "support", "generate": "generate"},
+        )
 
     builder.add_edge("generate", "critique")
     builder.add_conditional_edges(

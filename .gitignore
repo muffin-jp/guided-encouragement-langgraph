@@ -22,5 +22,10 @@ dist/
 # OS
 .DS_Store
 
+# Vendored embedding-model weights: fetched at build time (`make build-index`),
+# never committed. The runtime loads them locally; the built index.npz (small,
+# reproducible) IS committed as the audit artifact.
+app/rag/model/
+
 # eval outputs are regenerated on each run; committed copies are fine to keep,
 # but ignore transient ones. (Committed by choice — see evals/results/.)
