@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "embedder": {
+    "model": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "c9745ed1d9f207416be6d2e6f8de32d1f16199bf",
+    "dim": 384
+  },
+  "features": {
+    "include_feeling": false,
+    "feelings": [
+      "proud",
+      "relieved",
+      "frustrated",
+      "disappointed",
+      "anxious",
+      "tired",
+      "custom"
+    ],
+    "n_features": 384
+  },
+  "hyperparameters": {
+    "C": 10.0,
+    "class_weight": "balanced",
+    "penalty": "l2",
+    "solver": "lbfgs"
+  },
+  "thresholds": {
+    "low": 0.01814906857907772,
+    "high": 0.1627914011478424,
+    "routes": {
+      "below_low": "skip-llm",
+      "between_inclusive": "escalate",
+      "above_high": "support",
+      "invalid_score": "escalate"
+    },
+    "cost_model": {
+      "false_negative": 20.0,
+      "false_positive": 1.0
+    },
+    "low_margin": 0.5,
+    "fitted_on": "out-of-fold scores of the chosen config, grouped CV on train",
+    "validation": {
+      "llm_alone_expected_recall": 0.8633093525179856,
+      "cascade_expected_recall": 1.0,
+      "llm_alone_expected_cost": 381.3333333333333,
+      "cascade_expected_cost": 61.0,
+      "skip_share": 0.26156941649899396,
+      "escalate_share": 0.3420523138832998,
+      "support_share": 0.3963782696177062,
+      "skip_miss_upper_bound_95": 0.021321445229927072
+    }
+  },
+  "selection": {
+    "rule": "Feeling features ineligible (label leak, see probe); best mean fold PR-AUC; keep configs within 1 SE; lowest Brier among them; ties to smaller C, then no class reweighting.",
+    "cv_pr_auc_mean": 0.9604334785641043,
+    "cv_pr_auc_se": 0.019922120661963964,
+    "folds": 5,
+    "seed": 0
+  },
+  "calibration": {
+    "brier": 0.03823533084696844,
+    "ece": 0.05373004065806391
+  },
+  "provenance": {
+    "commit": "8d62f01f326b9c03c4d3e32b032abec3f3108ede",
+    "dirty": false,
+    "dataset_sha256": "a79700a0f570cfa47df73b607c85c59840ea5b2c4e042c5043c07f0257cd05ed",
+    "n_train": 497,
+    "n_positive": 139
+  }
+}

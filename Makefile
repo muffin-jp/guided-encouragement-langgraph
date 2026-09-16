@@ -1,4 +1,4 @@
-.PHONY: build-index check-index test lint types eval eval-dry
+.PHONY: build-index check-index check-classifier sync-classifier test lint types eval eval-dry
 
 # Vendor the pinned embedding weights (build-time network) and (re)build the
 # committed retrieval index from the reviewed corpus. Run this after editing
@@ -10,6 +10,18 @@ build-index:
 # a corpus edit can't land without its rebuilt index.
 check-index:
 	uv run python -m app.rag.build_index --check
+
+# CI guard: the committed classifier artifact is byte-identical to the one whose
+# test-set evaluation is recorded upstream, and loadable. No weights, no network.
+check-classifier:
+	uv run python -m app.classifier.check
+
+# Copy the artifact from a sibling bloom-distress-classifier checkout, then guard
+# it. A new artifact fails the guard until CLASSIFIER_ARTIFACT_SHA256 is updated —
+# which should only happen after it has been evaluated upstream.
+sync-classifier:
+	cp ../bloom-distress-classifier/artifacts/model.npz ../bloom-distress-classifier/artifacts/model.json app/classifier/
+	uv run python -m app.classifier.check
 
 test:
 	uv run pytest -q

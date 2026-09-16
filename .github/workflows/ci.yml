@@ -35,5 +35,9 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+      # The committed classifier artifact must be the evaluated one. Needs no weights.
+      - name: Classifier artifact guard
+        run: make check-classifier
+
       - name: Eval harness (dry, offline)
         run: uv run python evals/run.py --dry
