@@ -19,7 +19,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import router
-from app.config import CORS_ALLOW_ORIGIN_REGEX, CORS_ALLOW_ORIGINS, RAG_ENABLED, langsmith_enabled
+from app.config import (
+    CLASSIFIER_ENABLED,
+    CORS_ALLOW_ORIGIN_REGEX,
+    CORS_ALLOW_ORIGINS,
+    RAG_ENABLED,
+    langsmith_enabled,
+)
 from app.graph.build import build_graph
 from app.llm import build_anthropic_client
 from app.ratelimit import limiter, rate_limit_exceeded_handler
@@ -41,22 +47,54 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # production Postgres seam).
     app.state.graph = build_graph()
 
-    # Retrieval grounding: load the index + pinned local embedder once, only when
-    # RAG is on. When off, nothing here loads (no torch/onnx import, no vendored
-    # weights needed) and the retriever stays None — the graph has no retrieve node.
+    # The pinned local embedder is loaded once, and only if something needs it:
+    # retrieval grounding, the local distress classifier, or both share it. When
+    # neither is on, nothing here loads — no torch import, no vendored weights.
     app.state.retriever = None
-    if RAG_ENABLED:
+    app.state.classifier = None
+    app.state.classifier_status = "disabled"
+    embedder = None
+    if RAG_ENABLED or CLASSIFIER_ENABLED:
         try:
             from app.rag.embedder import load_embedder
+
+            embedder = load_embedder()
+        except Exception:
+            # Fail open: without an embedder, retrieval grounds nothing and every
+            # note escalates to the LLM — exactly the behaviour with both off.
+            logger.exception("failed to load the local embedder; retrieval and classifier off")
+
+    if RAG_ENABLED and embedder is not None:
+        try:
             from app.rag.retriever import INDEX_PATH, Retriever
 
-            app.state.retriever = Retriever.from_files(INDEX_PATH, load_embedder())
+            app.state.retriever = Retriever.from_files(INDEX_PATH, embedder)
             logger.info("retrieval grounding enabled (index + local embedder loaded)")
         except Exception:
             # Fail open: a startup problem loading retrieval must not take the
             # service down. The retrieve node fails open to empty grounding, so
             # the app simply behaves as pre-RAG until the index/weights are fixed.
             logger.exception("failed to load retriever; continuing with no grounding")
+
+    # Local distress classifier: dark by default (see CLASSIFIER_ENABLED in
+    # config for why it must stay off). A load failure is logged and surfaced on
+    # /healthz rather than silently hidden, and the classifier stays None — so
+    # every note escalates to the LLM, as it does with the flag off.
+    if CLASSIFIER_ENABLED:
+        app.state.classifier_status = "failed"
+        if embedder is not None:
+            try:
+                from app.classifier.local import load_classifier
+
+                app.state.classifier = load_classifier(embedder)
+                app.state.classifier_status = "enabled"
+                logger.warning(
+                    "local distress classifier ENABLED (artifact %s). This artifact does not "
+                    "pass the release gate with the classifier on; see CLASSIFIER_ENABLED.",
+                    app.state.classifier.artifact_sha256[:12],
+                )
+            except Exception:
+                logger.exception("failed to load the local classifier; escalating every note")
 
     try:
         app.state.anthropic_client = build_anthropic_client()
@@ -95,5 +133,11 @@ app.include_router(router)
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, bool]:
-    return {"ok": True, "configured": app.state.anthropic_client is not None}
+async def healthz() -> dict[str, bool | str]:
+    return {
+        "ok": True,
+        "configured": app.state.anthropic_client is not None,
+        # "disabled", "enabled", or "failed" — a failed load escalates every note,
+        # which is safe, but should not be invisible.
+        "classifier": app.state.classifier_status,
+    }

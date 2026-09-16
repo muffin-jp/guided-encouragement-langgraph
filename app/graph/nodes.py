@@ -104,10 +104,36 @@ async def classify_distress(state: GraphState, runtime: Runtime[GraphContext]) -
     Structured outputs pin the reply to {"distress": boolean}; if it still
     fails to parse we fail safe to distress=true (support is the safe failure
     mode for a wellness product).
+
+    When the local classifier is injected (``CLASSIFIER_ENABLED``), it is asked
+    first. A confident "not distress" skips the call; a confident "distress"
+    goes straight to support; anything else — including the classifier raising
+    — falls through to the call below, unchanged. With no classifier injected,
+    this node is byte-for-byte what it was.
     """
     free_text = (state.get("free_text") or "").strip()
     if not free_text:
         return {"distress": False}
+
+    classifier = runtime.context.classifier
+    if classifier is not None:
+        try:
+            decision = classifier.decide(free_text)
+        except Exception:
+            # Fail open to the LLM: a classifier fault must never decide a route.
+            logger.exception("local classifier failed; escalating to the LLM")
+        else:
+            # The note itself is never logged — only what was decided, and by what.
+            logger.info(
+                "local classifier route=%s score=%s artifact=%s",
+                decision.route,
+                "none" if decision.score is None else f"{decision.score:.4f}",
+                classifier.artifact_sha256[:12],
+            )
+            if decision.route == "skip-llm":
+                return {"distress": False, "distress_source": "local"}
+            if decision.route == "support":
+                return {"distress": True, "distress_source": "local"}
 
     client = runtime.context.client
     response = await client.messages.create(
@@ -129,9 +155,9 @@ async def classify_distress(state: GraphState, runtime: Runtime[GraphContext]) -
     if isinstance(parsed, dict):
         value = cast("dict[str, Any]", parsed).get("distress")
         if isinstance(value, bool):
-            return {"distress": value}
+            return {"distress": value, "distress_source": "llm"}
     logger.warning("distress classifier returned unparseable output; failing safe")
-    return {"distress": True}
+    return {"distress": True, "distress_source": "llm"}
 
 
 async def retrieve(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
