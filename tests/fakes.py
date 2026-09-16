@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from app.classifier.local import Decision, Route
 from app.config import DISTRESS_MODEL, GENERATION_MODEL, JUDGE_MODEL
 from app.graph.state import Passage
 
@@ -38,6 +39,27 @@ class FakeRetriever:
         if self.raises:
             raise RuntimeError("retriever boom")
         return list(self.passages[:k])
+
+
+@dataclass
+class FakeClassifier:
+    """Duck-types ``DistressClassifier`` for graph tests.
+
+    Scripts the route it returns, or raises, and counts calls so a test can
+    assert a chip-only request never reaches it.
+    """
+
+    route: str = "escalate"
+    score: float | None = 0.5
+    raises: bool = False
+    artifact_sha256: str = "f" * 64
+    calls: int = 0
+
+    def decide(self, free_text: str) -> Decision:
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("classifier boom")
+        return Decision(cast("Route", self.route), self.score)
 
 
 @dataclass

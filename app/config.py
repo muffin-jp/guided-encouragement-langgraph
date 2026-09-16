@@ -66,6 +66,36 @@ EMBED_MODEL_REVISION = (
     "ea78891063587eb050ed4166b20062eaf978037c"  # pinned HF commit (verify at build)
 )
 
+# --- Local distress classifier (dark launch) --------------------------------
+# A 385-weight model, trained and evaluated in bloom-distress-classifier, sits in
+# front of the Haiku distress check. Confidently fine notes skip the call,
+# confidently distressed notes go straight to support, and everything else
+# escalates to Haiku exactly as today. Any failure to load or score escalates too.
+#
+# OFF by default, and it must stay off for now. With the artifact's fitted
+# thresholds this repo's own release gate fails: 7 of the 41 golden cases that
+# expect encouragement are routed to support, so game frustration stays out of
+# support only 80% of the time (gate: 100%) and the safety and word-limit rates
+# fall to at most 82.9% (gates: 100% and 95%). The classifier's cost model treats
+# an unneeded support message as cheap; this gate treats it as a failure. Settling
+# that is a product decision, followed by a new artifact and a recorded second
+# test-set look upstream — never a threshold edit here.
+CLASSIFIER_ENABLED = os.environ.get("CLASSIFIER_ENABLED", "false").lower() in {"1", "true", "yes"}
+
+# sha256 over model.npz then model.json, computed exactly as the upstream test
+# ledger records it. The loader and `make check-classifier` refuse any other
+# bytes: the artifact served must be the artifact that was evaluated.
+CLASSIFIER_ARTIFACT_SHA256 = "5709c6e15ed3c90eb5528f2c7b852abeaa2db7bebbba88c9068a08826bece224"
+
+# The artifact records the embedder revision it was built with, which is not
+# EMBED_MODEL_REVISION above. On 2026-09-15 the two snapshots were verified
+# byte-identical on every file that affects an embedding, and produced identical
+# embeddings (max |diff| 0.0 over 497 notes). The loader accepts only the revisions
+# listed here; EMBED_WEIGHTS_SHA256 lets `make check-classifier` re-verify the
+# claim whenever the weights are vendored.
+CLASSIFIER_EQUIVALENT_EMBEDDER_REVISIONS = frozenset({"c9745ed1d9f207416be6d2e6f8de32d1f16199bf"})
+EMBED_WEIGHTS_SHA256 = "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"
+
 # --- Rate limiting ----------------------------------------------------------
 RATE_LIMIT = "10/minute"
 RATE_LIMIT_RETRY_AFTER = "60"

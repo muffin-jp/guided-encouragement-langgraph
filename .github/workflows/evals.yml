@@ -10,6 +10,7 @@ on:
       - "app/prompts/**"
       - "app/graph/**"
       - "app/rag/**"
+      - "app/classifier/**"
       - "app/config.py"
       - "evals/**"
       - ".github/workflows/evals.yml"

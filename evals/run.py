@@ -27,7 +27,7 @@ from typing import Any
 import anthropic
 from dotenv import load_dotenv
 
-from app.config import RAG_ENABLED
+from app.config import CLASSIFIER_ENABLED, RAG_ENABLED
 from app.graph.build import build_graph
 from app.graph.state import GraphContext
 from app.llm import build_anthropic_client
@@ -95,7 +95,7 @@ async def _with_retry(coro_factory: Any) -> Any:
 
 
 async def _run_graph(
-    graph: Any, client: Any, retriever: Any, case: EvalCase
+    graph: Any, client: Any, retriever: Any, classifier: Any, case: EvalCase
 ) -> tuple[str, str, int | None]:
     """Invoke the graph for one case, auto-resuming the moderation interrupt.
 
@@ -104,7 +104,7 @@ async def _run_graph(
     support path (and when RAG is off), else the number of passages retrieved.
     """
     config = {"configurable": {"thread_id": f"eval-{case.id}-{uuid.uuid4().hex}"}}
-    context = GraphContext(client=client, retriever=retriever)
+    context = GraphContext(client=client, retriever=retriever, classifier=classifier)
     graph_input: dict[str, Any] = {
         "stage_id": STAGE_ID,
         "feeling": case.feeling,
@@ -128,10 +128,12 @@ async def _run_graph(
     return result["path"], result.get("final_text", ""), grounding_count
 
 
-async def run_case(graph: Any, client: Any, retriever: Any, case: EvalCase) -> CaseResult:
+async def run_case(
+    graph: Any, client: Any, retriever: Any, classifier: Any, case: EvalCase
+) -> CaseResult:
     try:
         actual_path, text, grounding_count = await _with_retry(
-            lambda: _run_graph(graph, client, retriever, case)
+            lambda: _run_graph(graph, client, retriever, classifier, case)
         )
         words = word_count(text)
         is_encouragement = actual_path == "encouragement"
@@ -177,7 +179,7 @@ async def run_case(graph: Any, client: Any, retriever: Any, case: EvalCase) -> C
 
 
 async def _map_pool(
-    cases: list[EvalCase], graph: Any, client: Any, retriever: Any
+    cases: list[EvalCase], graph: Any, client: Any, retriever: Any, classifier: Any
 ) -> list[CaseResult]:
     """Bounded worker pool; preserves input order in the results list."""
     results: list[CaseResult | None] = [None] * len(cases)
@@ -187,7 +189,7 @@ async def _map_pool(
     async def worker(i: int, case: EvalCase) -> None:
         nonlocal done
         async with semaphore:
-            results[i] = await run_case(graph, client, retriever, case)
+            results[i] = await run_case(graph, client, retriever, classifier, case)
             done += 1
             print(f"\r  {done}/{len(cases)} cases complete", end="", flush=True)
 
@@ -229,6 +231,34 @@ def build_retriever() -> Any | None:
         return None
 
 
+def build_classifier() -> Any | None:
+    """The local distress classifier the eval graph uses, when CLASSIFIER_ENABLED is set.
+
+    This is the acceptance test for turning the classifier on, so unlike the app
+    it does NOT fail open: if the artifact or weights cannot load, the run exits
+    rather than quietly evaluating the LLM-only graph and reporting a pass for the
+    wrong system. Dry mode leaves it off — a stub embedder's vectors mean nothing
+    to a trained model; the classifier's routing is covered by the unit tests.
+    """
+    if not CLASSIFIER_ENABLED:
+        return None
+    if DRY:
+        print("CLASSIFIER_ENABLED is set but ignored in --dry mode (stub vectors).")
+        return None
+    try:
+        from app.classifier.local import load_classifier
+        from app.rag.embedder import load_embedder
+
+        return load_classifier(load_embedder())
+    except Exception as err:  # noqa: BLE001 - reported, then the run stops
+        print(
+            f"CLASSIFIER_ENABLED is set but the classifier could not load ({err}). "
+            "Refusing to report the LLM-only graph as a classifier run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def build_client() -> Any:
     if DRY:
         print("Running in --dry mode: fixture client, no API calls.\n")
@@ -247,15 +277,18 @@ async def main() -> None:
     client = build_client()
     graph = build_graph()
     retriever = build_retriever()
+    classifier = build_classifier()
     cases = load_dataset()
     grounding_note = (
         "on" if retriever is not None else ("off" if not RAG_ENABLED else "unavailable")
     )
+    classifier_note = "on" if classifier is not None else "off"
     print(
-        f"Running {len(cases)} eval cases (concurrency {CONCURRENCY}); grounding {grounding_note}."
+        f"Running {len(cases)} eval cases (concurrency {CONCURRENCY}); grounding "
+        f"{grounding_note}; local classifier {classifier_note}."
     )
 
-    results = await _map_pool(cases, graph, client, retriever)
+    results = await _map_pool(cases, graph, client, retriever, classifier)
     summary = evaluate(results)
     generated_at = datetime.now(UTC).isoformat()
 

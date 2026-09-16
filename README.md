@@ -104,6 +104,48 @@ the distress path to `support → END`. For the demo the checkpointer is an in-m
 (paused cases would then survive restarts and span instances). The interrupt/resume machinery is
 covered by `tests/test_graph.py` regardless of the default.
 
+### Local distress classifier (dark launch)
+
+A 385-weight model, trained and evaluated in
+[`bloom-distress-classifier`](../bloom-distress-classifier), can sit in front of the Haiku distress
+check. It embeds the note with the same pinned MiniLM the retriever uses, scores it with one dot
+product, and picks a route: **confidently fine** skips the Haiku call, **confidently distressed**
+goes straight to support, and **everything else escalates to Haiku exactly as today**. The graph's
+shape does not change — `classify_distress` simply asks the classifier first. It is off unless
+**`CLASSIFIER_ENABLED`** is set.
+
+**It is off by default, and it must stay off for now.** At the thresholds it was evaluated with,
+this repo's own release gate fails with the classifier on: 7 of the 41 golden cases that expect
+encouragement are routed to support. Game frustration then stays out of support only 80% of the time
+(gate: 100%), and because a support route produces no reply to judge, the safety and word-limit rates
+fall to at most 82.9% (gates: 100% and 95%). That result comes from the routes recorded at the
+classifier's single test-set look — those golden cases are its test set, and were not re-scored.
+
+The disagreement is a real one. The classifier's cost model treats an unneeded support message as
+cheap (1 against 20 for a missed crisis); this gate treats game frustration reaching support as a
+failure. Settling that is a product decision, followed by a new artifact and a recorded second
+test-set look upstream — not a threshold edit here.
+
+What the integration guarantees whether or not the flag is on:
+
+- **Served bytes are evaluated bytes.** `app/classifier/model.*` must hash to
+  `CLASSIFIER_ARTIFACT_SHA256`, the hash in the upstream test ledger. `make check-classifier` runs
+  in CI with no weights and no network.
+- **Every failure escalates.** A load failure leaves the classifier `None` and reports
+  `"classifier": "failed"` on `/healthz`; an exception while scoring, or a score that is not a finite
+  probability, falls through to Haiku. With no classifier injected, `classify_distress` is exactly
+  what it was.
+- **The note is never logged** — only the route, the score, and the artifact hash.
+- **The eval does not fail open.** `CLASSIFIER_ENABLED=1 uv run python evals/run.py` is the
+  acceptance test for turning it on, so if the classifier cannot load the run exits instead of
+  reporting the LLM-only graph as a pass.
+
+**Embedder revision.** The artifact was built on MiniLM revision `c9745ed1`, not this repo's pinned
+`ea78891`. The two snapshots were verified byte-identical on every file that affects an embedding,
+and produced identical embeddings (max |diff| 0.0 over 497 notes). The loader accepts only revisions
+listed in `CLASSIFIER_EQUIVALENT_EMBEDDER_REVISIONS`, and `make check-classifier` re-hashes the
+vendored weights whenever they are present.
+
 ## Streaming: mapping the graph onto SSE
 
 The route drives the compiled graph with `astream(stream_mode="custom")` and translates what the
@@ -270,6 +312,8 @@ Alongside `WORD_LIMIT`, `MAX_ATTEMPTS`, and `MODERATION_ENABLED`:
 - **`RAG_K`** (default 3) — passages injected as grounding · **`RAG_MIN_K`** (default 2) — preferred
   floor when the corpus has that many.
 - **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above.
+- **`CLASSIFIER_ENABLED`** — local distress classifier, **default off**, and it must stay off until
+  the release gate passes with it on (see above). Off returns exactly today's `classify_distress`.
 
 ## Layout
 
@@ -283,9 +327,13 @@ app/
   ratelimit.py       # slowapi limiter
   llm.py             # AsyncAnthropic client factory
   graph/
-    state.py         # typed graph state + injected runtime context (client, retriever)
+    state.py         # typed graph state + injected runtime context (client, retriever, classifier)
     nodes.py         # classify_distress, retrieve, generate, critique, moderate, support, emit
     build.py         # StateGraph wiring, conditional edges, compile(checkpointer=…)
+  classifier/
+    local.py         # strict artifact loader + numpy scoring + route (fails open to the LLM)
+    check.py         # CI guard: committed artifact is the evaluated one; weights match
+    model.npz model.json  # the evaluated artifact, byte-identical to upstream
   prompts/           # encouragement, distress, support — ported verbatim
   rag/
     corpus.jsonl     # the vetted, 100%-human-reviewed grounding passages (audit surface)
@@ -296,7 +344,7 @@ app/
 evals/
   run.py judge.py thresholds.py report.py dry_client.py stub_embedder.py types.py dataset.jsonl results/
 tests/
-  test_schemas.py test_graph.py test_sse.py test_retriever.py test_prompts.py
+  test_schemas.py test_graph.py test_sse.py test_retriever.py test_prompts.py test_classifier.py
 ```
 
 ## Non-goals

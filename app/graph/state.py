@@ -17,8 +17,9 @@ from anthropic import AsyncAnthropic
 from app.sse import ResponseKind
 
 if TYPE_CHECKING:
-    # Type-only import to keep the runtime dependency one-way (retriever imports
-    # Passage from here) and to avoid loading the rag package when RAG is off.
+    # Type-only imports keep the runtime dependency one-way (retriever imports
+    # Passage from here) and avoid loading optional packages when they are off.
+    from app.classifier.local import DistressClassifier
     from app.rag.retriever import Retriever
 
 
@@ -42,11 +43,14 @@ class GraphContext:
     Passing the client here (not in state) keeps credentials out of the
     checkpointer and lets tests inject a mock without patching module globals.
     The retriever is injected the same way (loaded once at startup, never
-    checkpointed); it is ``None`` when ``RAG_ENABLED`` is off.
+    checkpointed); it is ``None`` when ``RAG_ENABLED`` is off. So is the local
+    distress classifier, which is ``None`` when ``CLASSIFIER_ENABLED`` is off or
+    its artifact failed to load — and ``None`` means every note escalates.
     """
 
     client: AsyncAnthropic
     retriever: Retriever | None = None
+    classifier: DistressClassifier | None = None
 
 
 class CritiqueResult(TypedDict):
@@ -73,6 +77,9 @@ class GraphState(TypedDict, total=False):
 
     # --- classification ---
     distress: bool | None
+    # Who decided: "local" when the classifier answered confidently, "llm" when
+    # the call was made. Unset for chip-only requests, which reach neither.
+    distress_source: str
 
     # --- retrieval grounding ---
     # 0–RAG_K reviewed passages injected into generation as grounding; [] when
