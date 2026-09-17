@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "embedder": {
     "model": "sentence-transformers/all-MiniLM-L6-v2",
     "revision": "c9745ed1d9f207416be6d2e6f8de32d1f16199bf",
@@ -25,12 +25,12 @@
     "solver": "lbfgs"
   },
   "thresholds": {
-    "low": 0.01814906857907772,
-    "high": 0.1627914011478424,
+    "low": 0.016118823237433286,
+    "high": 1.0,
     "routes": {
-      "below_low": "skip-llm",
-      "between_inclusive": "escalate",
-      "above_high": "support",
+      "worst_segment_below_low": "skip-llm",
+      "whole_note_above_high": "support",
+      "otherwise": "escalate",
       "invalid_score": "escalate"
     },
     "cost_model": {
@@ -38,17 +38,29 @@
       "false_positive": 1.0
     },
     "low_margin": 0.5,
-    "fitted_on": "out-of-fold scores of the chosen config, grouped CV on train",
+    "low_fitted_on": "out-of-fold worst-segment scores of the chosen config, grouped CV on train",
+    "high_fitted_on": "out-of-fold whole-note scores of the same",
     "validation": {
       "llm_alone_expected_recall": 0.8633093525179856,
-      "cascade_expected_recall": 1.0,
+      "cascade_expected_recall": 0.8633093525179856,
       "llm_alone_expected_cost": 381.3333333333333,
-      "cascade_expected_cost": 61.0,
-      "skip_share": 0.26156941649899396,
-      "escalate_share": 0.3420523138832998,
-      "support_share": 0.3963782696177062,
+      "cascade_expected_cost": 381.3333333333333,
+      "skip_share": 0.1448692152917505,
+      "escalate_share": 0.8551307847082495,
+      "support_share": 0.0,
       "skip_miss_upper_bound_95": 0.021321445229927072
     }
+  },
+  "segmentation": {
+    "window": 8,
+    "stride": 4,
+    "boundary": "(?<=[.!?;])\\s+|\\n+|(?<=[}\\]>])\\s*",
+    "applies_to": "skip-llm",
+    "aggregate": "max"
+  },
+  "scope": {
+    "escalate_non_latin_letters": true,
+    "reason": "all-MiniLM-L6-v2 is English-only; a low score on text it cannot read is not evidence the note is calm"
   },
   "selection": {
     "rule": "Feeling features ineligible (label leak, see probe); best mean fold PR-AUC; keep configs within 1 SE; lowest Brier among them; ties to smaller C, then no class reweighting.",
@@ -62,8 +74,8 @@
     "ece": 0.05373004065806391
   },
   "provenance": {
-    "commit": "8d62f01f326b9c03c4d3e32b032abec3f3108ede",
-    "dirty": false,
+    "commit": "6f71c6a932bc4472d959fc42ab39c8c819522c0f",
+    "dirty": true,
     "dataset_sha256": "a79700a0f570cfa47df73b607c85c59840ea5b2c4e042c5043c07f0257cd05ed",
     "n_train": 497,
     "n_positive": 139

@@ -33,6 +33,7 @@ from app.classifier.local import (
     read_artifact,
     route_for,
 )
+from app.classifier.rules import ScopeRule, Segmentation
 from app.config import (
     CLASSIFIER_ARTIFACT_SHA256,
     CLASSIFIER_EQUIVALENT_EMBEDDER_REVISIONS,
@@ -162,12 +163,29 @@ def test_missing_files_are_refused(tmp_path: Path) -> None:
     ],
 )
 def test_routes_by_band_and_boundaries_escalate(score: float, expected: str) -> None:
-    assert route_for(score, 0.1, 0.8) == expected
+    """With no segment scoring the two statistics coincide, as for a one-clause note."""
+    assert route_for(score, score, 0.1, 0.8) == expected
 
 
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -0.1, 1.1, None, "0.5", True])
 def test_anything_that_is_not_a_probability_escalates(bad: object) -> None:
-    assert route_for(bad, 0.1, 0.8) == "escalate"
+    assert route_for(bad, 0.5, 0.1, 0.8) == "escalate"
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -0.1, 1.1, None, "0.5", True])
+def test_an_unusable_segment_score_escalates_rather_than_skipping(bad: object) -> None:
+    """Failing to score the segments is failing to prove the note is safe to skip."""
+    assert route_for(0.01, bad, 0.1, 0.8) == "escalate"
+
+
+def test_a_calm_note_hiding_an_alarming_clause_escalates() -> None:
+    """The dilution attack, as a rule: the whole note is below `low` and it still escalates."""
+    assert route_for(0.0078, 0.479, 0.1, 0.8) == "escalate"
+
+
+def test_support_is_decided_by_the_whole_note_not_its_worst_fragment() -> None:
+    """A clause read out of context must not by itself trigger the support message."""
+    assert route_for(0.3, 0.99, 0.1, 0.8) == "escalate"
 
 
 class AxisEmbedder:
@@ -189,7 +207,7 @@ class AxisEmbedder:
 def spec(dim: int = 4) -> ArtifactSpec:
     coef = np.zeros(dim)
     coef[0] = 4.0
-    return ArtifactSpec(coef, -2.0, 0.1, 0.8, dim, "x" * 40, "s" * 64)
+    return ArtifactSpec(coef, -2.0, 0.1, 0.8, dim, "x" * 40, "s" * 64, Segmentation(), ScopeRule())
 
 
 def test_decide_scores_and_routes() -> None:
