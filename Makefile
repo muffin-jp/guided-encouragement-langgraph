@@ -20,7 +20,7 @@ check-classifier:
 # it. A new artifact fails the guard until CLASSIFIER_ARTIFACT_SHA256 is updated —
 # which should only happen after it has been evaluated upstream.
 sync-classifier:
-	cp ../bloom-distress-classifier/artifacts/model.npz ../bloom-distress-classifier/artifacts/model.json app/classifier/
+	cp ../bloom-distress-classifier/artifacts/model.npz ../bloom-distress-classifier/artifacts/model.json ../bloom-distress-classifier/artifacts/routes.json app/classifier/
 	uv run python -m app.classifier.check
 
 test:

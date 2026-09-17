@@ -72,20 +72,42 @@ EMBED_MODEL_REVISION = (
 # confidently distressed notes go straight to support, and everything else
 # escalates to Haiku exactly as today. Any failure to load or score escalates too.
 #
-# OFF by default, and it must stay off for now. With the artifact's fitted
-# thresholds this repo's own release gate fails: 7 of the 41 golden cases that
-# expect encouragement are routed to support, so game frustration stays out of
-# support only 80% of the time (gate: 100%) and the safety and word-limit rates
-# fall to at most 82.9% (gates: 100% and 95%). The classifier's cost model treats
-# an unneeded support message as cheap; this gate treats it as a failure. Settling
-# that is a product decision, followed by a new artifact and a recorded second
-# test-set look upstream — never a threshold edit here.
+# OFF by default. The artifact of 2026-09-16 (evaluated upstream on 2026-09-17,
+# second recorded look) closes the support band entirely: its `high` is 1.000, so
+# nothing is routed to support and the failure that kept this flag off — 8 golden
+# encouragement cases diverted, dropping the safety rate to 80.5% against a 100%
+# gate — cannot recur. The skip band is now decided by a note's worst *segment*,
+# because mean pooling let a crisis clause inside a long calm note be averaged
+# away; upstream that let 13 of 72 adversarial notes skip the LLM, and 0 do now.
+#
+# What this buys is 14% fewer Haiku calls and nothing else: on the upstream test
+# set the cascade's recall and false-alarm count are identical to the LLM alone.
+# What it costs is the golden guarantee — the previous artifact routed all 10
+# golden distress cases to support without the LLM, and all 10 now escalate.
+#
+# The real eval was re-run with the flag on (2026-09-17) and passes every metric:
+# distress routing, game frustration, judge safety and word limits all 100%, mean
+# empathy 4.59 and tone 4.83. The classifier changed 6 of 51 routes, all of them
+# encouragement cases skipping the Haiku call and landing on encouragement; all 10
+# distress cases escalated and Haiku caught every one.
+#
+# Read that 10 of 10 carefully. Ten cases with no misses bound the per-case catch
+# rate below only 0.741 at 95%, and the judge and classifier are sampled. It says
+# routing did not break the gate, not that the previous artifact's direct-to-support
+# guarantee was safe to lose. Against production as it runs today — this flag off,
+# every note to Haiku — the distress path is identical, so that bound is one this
+# service already lives with rather than one the classifier introduces.
+#
+# Still to do before this goes on: measure latency, since a note now costs about ten
+# embeddings instead of one, and decide whether 14% fewer Haiku calls is worth two
+# rules kept in sync across two repositories. Never fix a gate failure by editing a
+# threshold here — thresholds are fitted upstream and carried by the artifact.
 CLASSIFIER_ENABLED = os.environ.get("CLASSIFIER_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 # sha256 over model.npz then model.json, computed exactly as the upstream test
 # ledger records it. The loader and `make check-classifier` refuse any other
 # bytes: the artifact served must be the artifact that was evaluated.
-CLASSIFIER_ARTIFACT_SHA256 = "5709c6e15ed3c90eb5528f2c7b852abeaa2db7bebbba88c9068a08826bece224"
+CLASSIFIER_ARTIFACT_SHA256 = "2de175fbaea1ec8e870bb06acfb2ae66eae55bacfb2af191f6287fed12c3e88e"
 
 # The artifact records the embedder revision it was built with, which is not
 # EMBED_MODEL_REVISION above. On 2026-09-15 the two snapshots were verified

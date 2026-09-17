@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import numpy as np
 
+from app.classifier.rules import ScopeRule, Segmentation
 from app.config import (
     CLASSIFIER_ARTIFACT_SHA256,
     CLASSIFIER_EQUIVALENT_EMBEDDER_REVISIONS,
@@ -42,11 +43,17 @@ from app.config import (
     EMBED_MODEL_REVISION,
 )
 
+#: The rules this service implements. The artifact must agree with them or not load.
+SEGMENTATION = Segmentation()
+SCOPE = ScopeRule()
+
 if TYPE_CHECKING:
     from app.rag.embedder import Embedder
 
 __all__ = [
     "ARTIFACT_DIR",
+    "SCOPE",
+    "SEGMENTATION",
     "ArtifactSpec",
     "ClassifierLoadError",
     "Decision",
@@ -60,7 +67,9 @@ __all__ = [
 ]
 
 ARTIFACT_DIR = Path(__file__).resolve().parent
-SCHEMA_VERSION = 1
+#: Bumped upstream when the skip band moved from whole notes to segments. An
+#: artifact at version 1 records a decision rule this module no longer implements.
+SCHEMA_VERSION = 2
 _FILES = ("model.npz", "model.json")
 
 Route = Literal["skip-llm", "escalate", "support"]
@@ -73,8 +82,14 @@ class ClassifierLoadError(RuntimeError):
 @dataclass(frozen=True)
 class Decision:
     route: Route
-    #: None when the note was escalated without a usable score.
+    #: The whole note's score, or None when it could not be scored. This is what
+    #: the support band reads.
     score: float | None
+    #: The highest score over the note's segments, which is what the skip band
+    #: reads. None when the note could not be scored.
+    worst: float | None = None
+    #: Set when the model was not allowed to judge the note at all.
+    out_of_scope: str = ""
 
 
 class DistressClassifier(Protocol):
@@ -104,6 +119,8 @@ class ArtifactSpec:
     embed_dim: int
     embed_revision: str
     sha256: str
+    segmentation: Segmentation
+    scope: ScopeRule
 
 
 def read_artifact(
@@ -158,6 +175,8 @@ def read_artifact(
     ):
         raise ClassifierLoadError(f"invalid thresholds low={low!r} high={high!r}")
 
+    _check_rules(document)
+
     dim = int(embedder.get("dim") or 0)
     with np.load(directory / "model.npz", allow_pickle=False) as data:
         coef = np.asarray(data["coef"], dtype=np.float64)
@@ -167,20 +186,71 @@ def read_artifact(
     if not (np.all(np.isfinite(coef)) and math.isfinite(intercept)):
         raise ClassifierLoadError("model weights are not finite")
 
-    return ArtifactSpec(coef, intercept, float(low), float(high), dim, revision, sha256)
+    return ArtifactSpec(
+        coef, intercept, float(low), float(high), dim, revision, sha256, SEGMENTATION, SCOPE
+    )
 
 
-def route_for(score: object, low: float, high: float) -> Route:
-    """Boundaries escalate, and so does anything that is not a finite probability."""
+def _check_rules(document: dict[str, Any]) -> None:
+    """Refuse an artifact whose splitting or scope rule is not the one implemented here.
+
+    Both are carried by the artifact precisely so this check can exist. Serving a
+    model whose skip band was fitted under one rule while applying another gives
+    no error and no obvious symptom — just different decisions from the ones that
+    were measured and red-teamed.
+    """
+    segmentation = cast("dict[str, Any]", document.get("segmentation") or {})
+    ours = {"window": SEGMENTATION.window, "stride": SEGMENTATION.stride,
+            "boundary": SEGMENTATION.boundary}  # fmt: skip
+    theirs = {key: segmentation.get(key) for key in ours}
+    if theirs != ours:
+        raise ClassifierLoadError(
+            f"artifact was fitted with segmentation {theirs!r}, and this service implements "
+            f"{ours!r}. The skip band would not be the one that was fitted or red-teamed."
+        )
+
+    scope = cast("dict[str, Any]", document.get("scope") or {})
+    flag = scope.get("escalate_non_latin_letters")
+    if flag != SCOPE.escalate_non_latin_letters:
+        raise ClassifierLoadError(
+            f"artifact records escalate_non_latin_letters={flag!r}, and this service "
+            f"implements {SCOPE.escalate_non_latin_letters!r}."
+        )
+
+
+def _probability(score: object) -> float | None:
+    """The score as a probability, or None if it is not one."""
     if isinstance(score, bool) or not isinstance(score, (int, float)):
-        return "escalate"
+        return None
     value = float(score)
     if not math.isfinite(value) or value < 0.0 or value > 1.0:
+        return None
+    return value
+
+
+def route_for(whole: object, worst: object, low: float, high: float) -> Route:
+    """The whole note decides support; the worst segment guards the skip band.
+
+    The two bands answer different questions. Support asks whether this note, as
+    written, is a crisis — a whole-note judgement, and what ``high`` was fitted on.
+    Skipping asks whether there is *nothing* here needing a human-grade reader,
+    which has to hold for every part of the note, because mean pooling lets a long
+    calm note hide a short alarming one.
+
+    Boundaries escalate, and so does anything that is not a finite probability —
+    including a missing segment score, because failing to score the segments is
+    failing to prove the note is safe to skip.
+    """
+    value = _probability(whole)
+    if value is None:
         return "escalate"
-    if value < low:
-        return "skip-llm"
     if value > high:
         return "support"
+    highest = _probability(worst)
+    if highest is None:
+        return "escalate"
+    if highest < low:
+        return "skip-llm"
     return "escalate"
 
 
@@ -195,12 +265,25 @@ class LocalDistressClassifier:
         self.artifact_sha256 = spec.sha256
 
     def decide(self, free_text: str) -> Decision:
-        vector = np.asarray(self._embedder.embed([free_text]), dtype=np.float64)
-        if vector.shape != (1, self._spec.embed_dim):
+        reason = self._spec.scope.out_of_scope(free_text)
+        if reason:
+            # Out of scope outranks the scores: a number from a model that cannot
+            # read the input is not evidence, least of all that skipping is safe.
+            return Decision("escalate", None, None, reason)
+
+        segments = self._spec.segmentation.split(free_text)
+        if not segments:
             return Decision("escalate", None)
-        logit = float(vector[0] @ self._spec.coef + self._spec.intercept)
-        score = float(np.exp(-np.logaddexp(0.0, -logit)))
-        return Decision(route_for(score, self._spec.low, self._spec.high), score)
+        # One embedding call for the whole note and all its parts. The embedder is
+        # the expensive step and it batches, so a note costs one call, not one each.
+        vectors = np.asarray(self._embedder.embed(segments), dtype=np.float64)
+        if vectors.shape != (len(segments), self._spec.embed_dim):
+            return Decision("escalate", None)
+        logits = vectors @ self._spec.coef + self._spec.intercept
+        scores = np.exp(-np.logaddexp(0.0, -logits))
+        # split() always yields the whole note first.
+        whole, worst = float(scores[0]), float(scores.max())
+        return Decision(route_for(whole, worst, self._spec.low, self._spec.high), whole, worst)
 
 
 def load_classifier(embedder: Embedder, directory: Path = ARTIFACT_DIR) -> LocalDistressClassifier:
