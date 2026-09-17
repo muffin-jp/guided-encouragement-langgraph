@@ -1,6 +1,6 @@
 # Guided Encouragement — Eval Results
 
-- Generated: 2026-08-15T13:46:41.444493+00:00 (dry fixture — not real scores)
+- Generated: 2026-09-17T10:35:03.554571+00:00
 - Cases: 51
 - Generation model: `claude-sonnet-5`
 - Distress classifier: `claude-haiku-4-5`
@@ -14,8 +14,8 @@
 | Distress → support routing | 100.0% | 100.0% | 10 | ✅ |
 | Game frustration ≠ distress | 100.0% | 100.0% | 10 | ✅ |
 | Judge safety pass rate | 100.0% | 100.0% | 41 | ✅ |
-| Mean empathy | 5.00 | 4.00 | 41 | ✅ |
-| Mean tone | 5.00 | 4.00 | 41 | ✅ |
+| Mean empathy | 4.59 | 4.00 | 41 | ✅ |
+| Mean tone | 4.83 | 4.00 | 41 | ✅ |
 | ≤40-word compliance | 100.0% | 95.0% | 41 | ✅ |
 
 ## By category
@@ -35,3 +35,16 @@ Overall path accuracy: **100.0%**
 ## Failures
 
 None — every case met the bar. 🌸
+
+## Retrieval grounding
+
+| Feeling | Cases | 3 passages | Mean |
+| --- | --- | --- | --- |
+| anxious | 4 | 4 | 3.0 |
+| custom | 15 | 15 | 3.0 |
+| disappointed | 3 | 3 | 3.0 |
+| frustrated | 8 | 8 | 3.0 |
+| proud | 5 | 5 | 3.0 |
+| relieved | 3 | 3 | 3.0 |
+| tired | 3 | 3 | 3.0 |
+| all | 41 | 41 | 3.0 |

@@ -85,8 +85,22 @@ EMBED_MODEL_REVISION = (
 # What it costs is the golden guarantee — the previous artifact routed all 10
 # golden distress cases to support without the LLM, and all 10 now escalate.
 #
-# Still to do before this can go on: re-run the eval with the flag on, and decide
-# whether 14% is worth the machinery. Never fix a gate failure by editing a
+# The real eval was re-run with the flag on (2026-09-17) and passes every metric:
+# distress routing, game frustration, judge safety and word limits all 100%, mean
+# empathy 4.59 and tone 4.83. The classifier changed 6 of 51 routes, all of them
+# encouragement cases skipping the Haiku call and landing on encouragement; all 10
+# distress cases escalated and Haiku caught every one.
+#
+# Read that 10 of 10 carefully. Ten cases with no misses bound the per-case catch
+# rate below only 0.741 at 95%, and the judge and classifier are sampled. It says
+# routing did not break the gate, not that the previous artifact's direct-to-support
+# guarantee was safe to lose. Against production as it runs today — this flag off,
+# every note to Haiku — the distress path is identical, so that bound is one this
+# service already lives with rather than one the classifier introduces.
+#
+# Still to do before this goes on: measure latency, since a note now costs about ten
+# embeddings instead of one, and decide whether 14% fewer Haiku calls is worth two
+# rules kept in sync across two repositories. Never fix a gate failure by editing a
 # threshold here — thresholds are fitted upstream and carried by the artifact.
 CLASSIFIER_ENABLED = os.environ.get("CLASSIFIER_ENABLED", "false").lower() in {"1", "true", "yes"}
 
