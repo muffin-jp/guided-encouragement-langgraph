@@ -18,7 +18,7 @@ from app.graph.state import Passage
 
 @dataclass
 class FakeRetriever:
-    """Duck-types the ``Retriever.retrieve`` surface for graph tests.
+    """Satisfies the ``Retriever`` Protocol for graph tests.
 
     Records call count so a test can assert the distress path never retrieves and
     that the reflection loop retrieves only once. Set ``raises=True`` to exercise

@@ -39,12 +39,9 @@ async def _run(
     """
     graph: Any = build_graph(enable_moderation=enable_moderation, enable_rag=enable_rag)
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
-    # FakeRetriever duck-types Retriever's async retrieve surface (the node only
-    # calls that); cast past the concrete-class annotation like the client above.
-    context = GraphContext(
-        client=cast(AsyncAnthropic, client),
-        retriever=cast("Any", retriever),
-    )
+    # FakeRetriever structurally satisfies the Retriever Protocol, so it needs no
+    # cast; the client still does (AsyncAnthropic is a concrete type).
+    context = GraphContext(client=cast(AsyncAnthropic, client), retriever=retriever)
     result = await graph.ainvoke(
         {"stage_id": "s1", "feeling": feeling, "free_text": free_text, "attempts": 0},
         config=config,

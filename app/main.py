@@ -23,6 +23,7 @@ from app.config import (
     CLASSIFIER_ENABLED,
     CORS_ALLOW_ORIGIN_REGEX,
     CORS_ALLOW_ORIGINS,
+    RAG_BACKEND,
     RAG_ENABLED,
     langsmith_enabled,
 )
@@ -66,14 +67,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if RAG_ENABLED and embedder is not None:
         try:
-            from app.rag.retriever import INDEX_PATH, Retriever
+            if RAG_BACKEND == "pgvector":
+                from app.config import DATABASE_URL, RAG_PG_TABLE
+                from app.rag.pg_retriever import PgVectorRetriever
 
-            app.state.retriever = Retriever.from_files(INDEX_PATH, embedder)
-            logger.info("retrieval grounding enabled (index + local embedder loaded)")
+                if not DATABASE_URL:
+                    raise RuntimeError("RAG_BACKEND=pgvector requires DATABASE_URL")
+                app.state.retriever = await PgVectorRetriever.connect(
+                    DATABASE_URL, RAG_PG_TABLE, embedder
+                )
+                logger.info("retrieval grounding enabled (pgvector backend)")
+            else:
+                from app.rag.retriever import INDEX_PATH, MemoryRetriever
+
+                app.state.retriever = MemoryRetriever.from_files(INDEX_PATH, embedder)
+                logger.info("retrieval grounding enabled (memory backend)")
         except Exception:
             # Fail open: a startup problem loading retrieval must not take the
             # service down. The retrieve node fails open to empty grounding, so
-            # the app simply behaves as pre-RAG until the index/weights are fixed.
+            # the app simply behaves as pre-RAG until the backend is fixed.
             logger.exception("failed to load retriever; continuing with no grounding")
 
     # Local distress classifier: dark by default (see CLASSIFIER_ENABLED in
@@ -109,6 +121,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     client = app.state.anthropic_client
     if client is not None:
         await client.close()
+
+    # Close the pgvector pool if one was opened (memory backend has no aclose).
+    aclose = getattr(app.state.retriever, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 app = FastAPI(title="Bloom — Guided Encouragement", lifespan=lifespan)

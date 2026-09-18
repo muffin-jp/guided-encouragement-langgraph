@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from app.rag.retriever import Retriever
+from app.rag.retriever import MemoryRetriever
 
 pytestmark = pytest.mark.asyncio
 
@@ -51,10 +51,10 @@ def _record(pid: str, feelings: list[str], text: str, kind: str = "technique") -
     return {"id": pid, "feelings": feelings, "kind": kind, "text": text, "source": "test"}
 
 
-def _retriever(records: list[dict[str, Any]]) -> Retriever:
+def _retriever(records: list[dict[str, Any]]) -> MemoryRetriever:
     embedder = StubEmbedder()
     vectors = embedder.embed([r["text"] for r in records])
-    return Retriever(vectors, records, embedder)
+    return MemoryRetriever(vectors, records, embedder)
 
 
 async def test_filters_by_feeling() -> None:
@@ -147,7 +147,7 @@ async def test_from_files_round_trip(tmp_path: Path) -> None:
     index_path = tmp_path / "index.npz"
     np.savez(index_path, vectors=vectors, meta=np.array(meta))
 
-    r = Retriever.from_files(index_path, embedder)
+    r = MemoryRetriever.from_files(index_path, embedder)
     got = await r.retrieve("proud", None, k=3)
     assert {p["id"] for p in got} == {"proud-1", "uni-1"}
 
@@ -159,4 +159,4 @@ async def test_from_files_rejects_dim_mismatch(tmp_path: Path) -> None:
     index_path = tmp_path / "index.npz"
     np.savez(index_path, vectors=vectors, meta=np.array(meta))
     with pytest.raises(ValueError, match="dim"):
-        Retriever.from_files(index_path, StubEmbedder())
+        MemoryRetriever.from_files(index_path, StubEmbedder())
