@@ -88,9 +88,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
                 app.state.classifier = load_classifier(embedder)
                 app.state.classifier_status = "enabled"
-                logger.warning(
-                    "local distress classifier ENABLED (artifact %s). This artifact does not "
-                    "pass the release gate with the classifier on; see CLASSIFIER_ENABLED.",
+                logger.info(
+                    "local distress classifier ENABLED (artifact %s): about 14%% of notes skip "
+                    "the Haiku call, nothing is routed to support. The release gate passes with "
+                    "it on; see CLASSIFIER_ENABLED.",
                     app.state.classifier.artifact_sha256[:12],
                 )
             except Exception:

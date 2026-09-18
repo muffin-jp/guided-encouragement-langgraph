@@ -109,22 +109,38 @@ covered by `tests/test_graph.py` regardless of the default.
 A 385-weight model, trained and evaluated in
 [`bloom-distress-classifier`](../bloom-distress-classifier), can sit in front of the Haiku distress
 check. It embeds the note with the same pinned MiniLM the retriever uses, scores it with one dot
-product, and picks a route: **confidently fine** skips the Haiku call, **confidently distressed**
-goes straight to support, and **everything else escalates to Haiku exactly as today**. The graph's
-shape does not change — `classify_distress` simply asks the classifier first. It is off unless
-**`CLASSIFIER_ENABLED`** is set.
+product, and picks a route. The graph's shape does not change — `classify_distress` simply asks the
+classifier first. It is off unless **`CLASSIFIER_ENABLED`** is set.
 
-**It is off by default, and it must stay off for now.** At the thresholds it was evaluated with,
-this repo's own release gate fails with the classifier on: 7 of the 41 golden cases that expect
-encouragement are routed to support. Game frustration then stays out of support only 80% of the time
-(gate: 100%), and because a support route produces no reply to judge, the safety and word-limit rates
-fall to at most 82.9% (gates: 100% and 95%). That result comes from the routes recorded at the
-classifier's single test-set look — those golden cases are its test set, and were not re-scored.
+| Condition | Route |
+| --- | --- |
+| every segment of the note scores below `low` (0.0161) | skip the Haiku call, straight to encouragement |
+| the whole note scores above `high` (1.000) | straight to support — **never**, the band is closed |
+| a letter in the note is not Latin script | escalate to Haiku, whatever it scored |
+| anything else | escalate to Haiku, exactly as today |
 
-The disagreement is a real one. The classifier's cost model treats an unneeded support message as
-cheap (1 against 20 for a missed crisis); this gate treats game frustration reaching support as a
-failure. Settling that is a product decision, followed by a new artifact and a recorded second
-test-set look upstream — not a threshold edit here.
+**A note is scored in pieces, not as one string.** MiniLM mean-pools, so a crisis clause inside a
+longer note about a puzzle is averaged away: *"cleared the level finally, tries and tries. honestly
+i've been thinking about ending it"* scores 0.008 whole and 0.479 as its final clause. Skipping is
+the only route that can add a missed crisis, so it is decided by the note's *highest-scoring*
+sentence or sliding word window. Support still reads the whole note: routing on fragments would send
+a note to support for one clause read out of context.
+
+**The support band is closed on purpose.** An earlier artifact routed confidently-distressed notes
+straight to support, and this repo's release gate failed with it on — eight encouragement cases were
+diverted, dropping the judge safety rate to 80.5% against a 100% gate. That rule is now a constraint
+upstream rather than a price traded against a cost model, so `high` is 1.000 and nothing is routed
+to support. The gate passes with the classifier on (2026-09-17): every metric 100%, mean empathy
+4.59, tone 4.83.
+
+**What it buys, and what it costs.** 14% of notes skip the Haiku call. Nothing else changes: on the
+upstream test set the cascade's recall and false-alarm count are identical to Haiku alone, so this
+is a cost reduction with a safety obligation, not a safety improvement. The cost is that the earlier
+artifact's guarantee is gone — it routed all 10 golden distress cases to support without the LLM,
+and all 10 now escalate. Against production as it runs today, with this flag off, the distress path
+is identical.
+
+**It is still off by default**, because "the gate passes" is a precondition and not the decision.
 
 What the integration guarantees whether or not the flag is on:
 
@@ -136,6 +152,10 @@ What the integration guarantees whether or not the flag is on:
   probability, falls through to Haiku. With no classifier injected, `classify_distress` is exactly
   what it was.
 - **The note is never logged** — only the route, the score, and the artifact hash.
+- **The splitting rule cannot drift.** `app/classifier/rules.py` is a second implementation of a
+  rule fitted upstream, so the artifact carries its parameters and the loader refuses one that
+  disagrees — drift is a startup failure, not a silent change in routing. `app/classifier/routes.json`
+  freezes 91 upstream routes and `tests/test_classifier_parity.py` re-derives every one.
 - **The eval does not fail open.** `CLASSIFIER_ENABLED=1 uv run python evals/run.py` is the
   acceptance test for turning it on, so if the classifier cannot load the run exits instead of
   reporting the LLM-only graph as a pass.
@@ -312,8 +332,11 @@ Alongside `WORD_LIMIT`, `MAX_ATTEMPTS`, and `MODERATION_ENABLED`:
 - **`RAG_K`** (default 3) — passages injected as grounding · **`RAG_MIN_K`** (default 2) — preferred
   floor when the corpus has that many.
 - **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above.
-- **`CLASSIFIER_ENABLED`** — local distress classifier, **default off**, and it must stay off until
-  the release gate passes with it on (see above). Off returns exactly today's `classify_distress`.
+- **`CLASSIFIER_ENABLED`** — local distress classifier, **default off**. The release gate passes
+  with it on, so what remains is a product decision rather than a blocker (see above). Off returns
+  exactly today's `classify_distress`; on, about 14% of notes skip the Haiku call and nothing is
+  routed to support. Turning it on needs the vendored MiniLM weights present, which is already true
+  whenever `RAG_ENABLED` is on — the two share one embedder.
 
 ## Layout
 
