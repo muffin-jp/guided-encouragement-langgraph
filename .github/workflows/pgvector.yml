@@ -1,0 +1,48 @@
+name: pgvector backend
+
+# Runs the pgvector integration + parity tests against a real Postgres service.
+# The tests use an offline stub embedder over a temp table, so no model download
+# and no API key are needed — just the DB. Triggered on changes to the retrieval
+# backend, the schema, or this workflow.
+on:
+  pull_request:
+    paths:
+      - "app/rag/**"
+      - "sql/**"
+      - "tests/test_pgvector.py"
+      - ".github/workflows/pgvector.yml"
+  workflow_dispatch:
+
+jobs:
+  pg:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: bloom
+          POSTGRES_PASSWORD: bloom
+          POSTGRES_DB: bloom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bloom -d bloom"
+          --health-interval 3s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dependencies (pgvector extra)
+        run: uv sync --extra pgvector
+
+      - name: pgvector integration + parity tests
+        run: uv run pytest tests/test_pgvector.py -q
+        env:
+          DATABASE_URL: postgresql://bloom:bloom@localhost:5432/bloom
