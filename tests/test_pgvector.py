@@ -40,6 +40,10 @@ async def _open() -> Any:
     from pgvector.asyncpg import register_vector
 
     conn = await asyncpg.connect(DATABASE_URL)
+    # register_vector introspects the `vector` type, so the extension must exist
+    # first — create it here so the tests are self-contained on a bare Postgres
+    # (the CI service provides one with no migration run).
+    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
     await register_vector(conn)
     return conn
 
@@ -48,7 +52,6 @@ async def _open() -> Any:
 async def table() -> AsyncIterator[str]:
     """A per-test pgvector table sized to the stub embedder, dropped on teardown."""
     conn = await _open()
-    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
     name = "test_grounding_" + uuid.uuid4().hex
     await conn.execute(
         f"CREATE TABLE {name} (id text PRIMARY KEY, feelings text[] NOT NULL, "
