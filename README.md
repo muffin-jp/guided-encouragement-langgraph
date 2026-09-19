@@ -90,6 +90,14 @@ excluded**: crisis replies stay the fixed reviewed `SUPPORT_MESSAGE`, never RAG-
 switch **`RAG_ENABLED`** (default on) drops the node entirely for an instant rollback to the exact
 pre-RAG graph. Both branches are covered in `tests/test_graph.py`.
 
+The retriever sits behind a small `Retriever` Protocol, so the store is swappable without touching
+the graph. Two backends ship: **`memory`** (default) does the filter-then-rank in-process with numpy
+over the committed `index.npz`; **`pgvector`** runs the same filter + cosine + top-k as one SQL query
+against Postgres (`WHERE feeling-filter ORDER BY embedding <=> query LIMIT k`), seeded offline from
+the same corpus. **The query is embedded locally in both** — pgvector adds an internal DB hop, not a
+network embed — so the no-request-time-network story holds. `RAG_BACKEND=memory` is an instant
+fallback that needs no database.
+
 ### Human-in-the-loop moderation (non-blocking)
 
 A distressed player must never wait on a human, so **the distress path streams the static support
@@ -249,6 +257,19 @@ make build-index          # vendors the pinned weights + writes app/rag/index.np
 Set `RAG_ENABLED=0` and neither the extra nor the build step is needed — the app runs its exact
 pre-RAG graph.
 
+**Optional pgvector backend (`RAG_BACKEND=pgvector`).** To run retrieval out of Postgres instead of
+the in-process index, start a local pgvector, apply the schema, and seed it from the same corpus:
+
+```bash
+uv sync --extra rag --extra pgvector
+make db-up db-migrate db-seed          # start Postgres, apply sql/, seed from corpus.jsonl
+RAG_BACKEND=pgvector DATABASE_URL=postgresql://bloom:bloom@localhost:5432/bloom \
+  uv run uvicorn app.main:app --reload
+```
+
+`make db-check` guards that the live table matches the corpus, the way `check-index` guards the file.
+`DATABASE_URL` is server-side only. The default `memory` backend needs none of this.
+
 ```bash
 # quick smoke test (streams SSE)
 curl -N -X POST localhost:8000/api/encourage \
@@ -331,7 +352,9 @@ Alongside `WORD_LIMIT`, `MAX_ATTEMPTS`, and `MODERATION_ENABLED`:
   redeploy — the `retrieve` node isn't wired and no index/embedder is loaded.
 - **`RAG_K`** (default 3) — passages injected as grounding · **`RAG_MIN_K`** (default 2) — preferred
   floor when the corpus has that many.
-- **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above.
+- **`RAG_BACKEND`** — `memory` (default, in-process numpy over `index.npz`) or `pgvector` (Postgres).
+  With pgvector, **`DATABASE_URL`** (server-side only) and **`RAG_PG_TABLE`** apply.
+- **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above (used by both backends).
 - **`CLASSIFIER_ENABLED`** — local distress classifier, **default off**. The release gate passes
   with it on, so what remains is a product decision rather than a blocker (see above). Off returns
   exactly today's `classify_distress`; on, about 14% of notes skip the Haiku call and nothing is
@@ -362,12 +385,17 @@ app/
     corpus.jsonl     # the vetted, 100%-human-reviewed grounding passages (audit surface)
     build_index.py   # offline deterministic index build (+ --check CI guard)
     embedder.py      # Embedder protocol + pinned local sentence-transformer
-    retriever.py     # filter-by-feeling + cosine rank over index.npz
+    retriever.py     # Retriever Protocol + MemoryRetriever (numpy over index.npz)
+    pg_retriever.py  # PgVectorRetriever — same Protocol, filter+cosine+top-k as one SQL
+    seed_db.py       # offline seed of the pgvector table (+ --check guard)
     index.npz        # committed, offline-built vectors (model/ weights are vendored, git-ignored)
+sql/001_grounding.sql # pgvector schema: extension, table, GIN + HNSW indexes
+docker-compose.yml    # local Postgres+pgvector for RAG_BACKEND=pgvector
 evals/
   run.py judge.py thresholds.py report.py dry_client.py stub_embedder.py types.py dataset.jsonl results/
 tests/
   test_schemas.py test_graph.py test_sse.py test_retriever.py test_prompts.py test_classifier.py
+  test_pgvector.py  # pgvector integration + parity (skipped without DATABASE_URL)
 ```
 
 ## Non-goals

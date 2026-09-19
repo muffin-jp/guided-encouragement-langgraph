@@ -1,0 +1,28 @@
+# Local Postgres + pgvector for the pgvector retrieval backend (RAG_BACKEND=pgvector).
+# Not used by the default `memory` backend, the unit tests, or the --dry eval.
+#
+#   make db-up db-migrate db-seed
+#   RAG_BACKEND=pgvector DATABASE_URL=postgresql://bloom:bloom@localhost:5432/bloom \
+#     uv run uvicorn app.main:app --reload
+#
+# Demo credentials only — do not reuse them anywhere real.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: bloom
+      POSTGRES_PASSWORD: bloom
+      POSTGRES_DB: bloom
+    ports:
+      - "5432:5432"
+    volumes:
+      - bloom_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bloom -d bloom"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  bloom_pgdata:

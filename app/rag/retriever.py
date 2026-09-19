@@ -1,10 +1,13 @@
-"""In-process retriever over the offline-built index.
+"""Retrieval grounding: the ``Retriever`` seam and its in-process backend.
 
-Load once at startup (``Retriever.from_files``) and inject via ``GraphContext``,
-mirroring how the Anthropic client is injected — never checkpointed. At request
-time it does no network: it filters the vetted corpus by the player's feeling,
-embeds the query with the pinned local model in-process, and ranks by cosine
-similarity.
+``Retriever`` is a Protocol — one async ``retrieve`` method. The graph
+(``GraphContext.retriever``, the ``retrieve`` node) depends only on it, so a
+backend can be swapped without touching the graph. ``MemoryRetriever`` is the
+in-process backend: it loads the offline-built index once
+(``MemoryRetriever.from_files``), does no network at request time, filters the
+vetted corpus by the player's feeling, embeds the query with the pinned local
+model, and ranks by cosine similarity. A ``PgVectorRetriever`` (Postgres) can sit
+behind the same Protocol.
 
 The index (``index.npz``) is built offline and deterministically by
 :mod:`app.rag.build_index`; this module only reads it.
@@ -20,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
@@ -50,8 +53,21 @@ def _passage_matches(feelings: list[str], feeling: str) -> bool:
     return feeling in feelings or "*" in feelings
 
 
-class Retriever:
-    """Filter-then-rank retrieval over the vetted corpus."""
+class Retriever(Protocol):
+    """The graph's view of retrieval grounding — one async method.
+
+    Both ``MemoryRetriever`` and a future ``PgVectorRetriever`` satisfy this, so
+    ``GraphContext.retriever`` and the ``retrieve`` node bind to the Protocol,
+    never a concrete backend.
+    """
+
+    async def retrieve(
+        self, feeling: str, free_text: str | None, *, k: int = RAG_K
+    ) -> list[Passage]: ...
+
+
+class MemoryRetriever:
+    """In-process filter-then-rank retrieval over the vetted corpus (numpy)."""
 
     def __init__(self, vectors: np.ndarray, records: list[dict[str, Any]], embedder: Embedder):
         # ``records`` carry the filter tags (``feelings``) alongside the public
@@ -61,7 +77,7 @@ class Retriever:
         self._embedder = embedder
 
     @classmethod
-    def from_files(cls, index_path: Path, embedder: Embedder) -> Retriever:
+    def from_files(cls, index_path: Path, embedder: Embedder) -> MemoryRetriever:
         """Load a committed ``index.npz`` and pair it with an embedder.
 
         ``allow_pickle=False``: the vectors are a plain float array and the

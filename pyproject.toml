@@ -28,6 +28,9 @@ langsmith = ["langsmith>=0.1"]
 # so RAG_ENABLED=0 needs none of this. Weights are vendored at build time
 # (`make build-index`); the runtime never reaches the network to embed.
 rag = ["sentence-transformers>=3.0"]
+# pgvector retrieval backend. Only needed when RAG_BACKEND=pgvector; the default
+# `memory` backend, unit tests, and `--dry` eval never import a DB driver.
+pgvector = ["asyncpg>=0.30", "pgvector>=0.3"]
 
 [dependency-groups]
 dev = [

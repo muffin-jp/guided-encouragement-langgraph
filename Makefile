@@ -1,4 +1,8 @@
-.PHONY: build-index check-index check-classifier sync-classifier test lint types eval eval-dry
+.PHONY: build-index check-index check-classifier sync-classifier test lint types eval eval-dry \
+	db-up db-down db-migrate db-seed db-check
+
+# Local Postgres+pgvector for RAG_BACKEND=pgvector. Override for other envs.
+DATABASE_URL ?= postgresql://bloom:bloom@localhost:5432/bloom
 
 # Vendor the pinned embedding weights (build-time network) and (re)build the
 # committed retrieval index from the reviewed corpus. Run this after editing
@@ -39,3 +43,22 @@ eval:
 
 eval-dry:
 	uv run python evals/run.py --dry
+
+# --- pgvector backend (RAG_BACKEND=pgvector) --------------------------------
+# db-up starts local Postgres; db-migrate applies the schema (psql runs inside the
+# container, so no host psql needed); db-seed loads the corpus rows; db-check is the
+# CI guard that the live table matches corpus.jsonl.
+db-up:
+	docker compose up -d db
+
+db-down:
+	docker compose down
+
+db-migrate:
+	docker compose exec -T db psql -U bloom -d bloom -f - < sql/001_grounding.sql
+
+db-seed:
+	RAG_BACKEND=pgvector DATABASE_URL="$(DATABASE_URL)" uv run python -m app.rag.seed_db
+
+db-check:
+	RAG_BACKEND=pgvector DATABASE_URL="$(DATABASE_URL)" uv run python -m app.rag.seed_db --check

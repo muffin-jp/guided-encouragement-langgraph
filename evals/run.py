@@ -211,18 +211,18 @@ def build_retriever() -> Any | None:
         return None
     if DRY:
         from app.rag.build_index import load_corpus
-        from app.rag.retriever import Retriever
+        from app.rag.retriever import MemoryRetriever
         from evals.stub_embedder import StubEmbedder
 
         records = load_corpus()
         embedder = StubEmbedder()
         vectors = embedder.embed([r["text"] for r in records])
-        return Retriever(vectors, records, embedder)
+        return MemoryRetriever(vectors, records, embedder)
     try:
         from app.rag.embedder import load_embedder
-        from app.rag.retriever import INDEX_PATH, Retriever
+        from app.rag.retriever import INDEX_PATH, MemoryRetriever
 
-        return Retriever.from_files(INDEX_PATH, load_embedder())
+        return MemoryRetriever.from_files(INDEX_PATH, load_embedder())
     except Exception as err:  # noqa: BLE001 - non-fatal; grounding just goes empty
         print(
             f"warning: could not load retriever ({err}); running without grounding.",

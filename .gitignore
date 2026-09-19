@@ -29,3 +29,6 @@ app/rag/model/
 
 # eval outputs are regenerated on each run; committed copies are fine to keep,
 # but ignore transient ones. (Committed by choice — see evals/results/.)
+
+# Local-only design note for the pgvector migration (not part of the repo).
+docs/BUILD_SPEC_pgvector.md

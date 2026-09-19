@@ -53,6 +53,15 @@ RAG_ENABLED = os.environ.get("RAG_ENABLED", "true").lower() in {"1", "true", "ye
 RAG_K = int(os.environ.get("RAG_K", "3"))  # passages injected as grounding
 RAG_MIN_K = int(os.environ.get("RAG_MIN_K", "2"))  # preferred floor when the corpus allows
 
+# Retrieval backend behind the same Retriever seam:
+#   memory  : in-process numpy over the committed index.npz (default; offline, CI).
+#   pgvector: Postgres + pgvector, seeded offline from corpus.jsonl (`make db-seed`).
+# The embedder is local either way — pgvector adds a DB hop, not a network embed.
+# DATABASE_URL is server-side only and required only when RAG_BACKEND=pgvector.
+RAG_BACKEND = os.environ.get("RAG_BACKEND", "memory").lower()
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+RAG_PG_TABLE = os.environ.get("RAG_PG_TABLE", "grounding_passages")
+
 # Pinned local sentence-transformer. No third-party embedding API and no runtime
 # network to embed: the weights are vendored at build time (huggingface.co is not
 # on the runtime allow-list) and loaded with local_files_only=True, and the query
