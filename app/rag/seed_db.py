@@ -78,6 +78,19 @@ async def seed(records: list[dict[str, Any]], vectors: np.ndarray, table: str, d
     print(f"Seeded {len(records)} passage(s) into {safe}.")
 
 
+def _as_vector(value: Any) -> np.ndarray:
+    """Coerce a fetched embedding to a float32 array.
+
+    The pgvector asyncpg codec decodes ``embedding`` to a ``pgvector.Vector`` (not
+    a numpy array), so go through ``to_numpy`` when present, else treat it as a
+    sequence of floats.
+    """
+    to_numpy = getattr(value, "to_numpy", None)
+    if to_numpy is not None:
+        return np.asarray(to_numpy(), dtype=np.float32)
+    return np.asarray(list(value), dtype=np.float32)
+
+
 async def check(records: list[dict[str, Any]], vectors: np.ndarray, table: str, dsn: str) -> int:
     """Return 0 if the live table matches a fresh build of the corpus, else 1."""
     safe = safe_table(table)
@@ -106,7 +119,7 @@ async def check(records: list[dict[str, Any]], vectors: np.ndarray, table: str, 
         )
         return 1
     for r in rows:
-        if not np.allclose(np.asarray(r["embedding"]), fresh_vec[r["id"]], atol=1e-4, rtol=1e-4):
+        if not np.allclose(_as_vector(r["embedding"]), fresh_vec[r["id"]], atol=1e-4, rtol=1e-4):
             print(
                 f"embedding for {r['id']!r} differs from a fresh build; run `make db-seed`.",
                 file=sys.stderr,
