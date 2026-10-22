@@ -3,11 +3,13 @@ name: pgvector backend
 # Runs the pgvector integration + parity tests against a real Postgres service.
 # The tests use an offline stub embedder over a temp table, so no model download
 # and no API key are needed — just the DB. Triggered on changes to the retrieval
-# backend, the schema, or this workflow.
+# store, its startup wiring, the schema, or this workflow.
 on:
   pull_request:
     paths:
       - "app/rag/**"
+      - "app/main.py"
+      - "app/config.py"
       - "sql/**"
       - "tests/test_pgvector.py"
       - ".github/workflows/pgvector.yml"

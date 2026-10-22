@@ -27,7 +27,7 @@ from typing import Any
 import anthropic
 from dotenv import load_dotenv
 
-from app.config import CLASSIFIER_ENABLED, RAG_ENABLED
+from app.config import CLASSIFIER_ENABLED, DATABASE_URL, RAG_ENABLED, RAG_PG_TABLE
 from app.graph.build import build_graph
 from app.graph.state import GraphContext
 from app.llm import build_anthropic_client
@@ -198,14 +198,20 @@ async def _map_pool(
     return [r for r in results if r is not None]
 
 
-def build_retriever() -> Any | None:
+async def build_retriever() -> Any | None:
     """Construct the retriever the eval graph will use, matching production.
 
     RAG off → None (no retrieve node is wired anyway). Dry → an offline stub
-    embedder over the *real* corpus, so the retrieve node and the retrieval-count
-    report are exercised without weights or network. Real → the pinned local
-    model over the committed index; if the weights aren't vendored we fall open to
-    no grounding (mirroring the app's startup fail-open) rather than aborting.
+    embedder over the *real* corpus with the in-memory reference retriever, so
+    the retrieve node and the retrieval-count report are exercised without
+    weights, network, or a DB. Real → the same pgvector store production runs,
+    with the pinned local model.
+
+    Unlike the app, the real eval **fails loud**: if grounding is on but the
+    retriever can't be built (no DATABASE_URL, unreachable DB, weights not
+    vendored), it exits non-zero instead of silently running ungrounded — that
+    would gate a different system than the one that ships. Set RAG_ENABLED=0 to
+    run an ungrounded eval on purpose.
     """
     if not RAG_ENABLED:
         return None
@@ -218,17 +224,21 @@ def build_retriever() -> Any | None:
         embedder = StubEmbedder()
         vectors = embedder.embed([r["text"] for r in records])
         return MemoryRetriever(vectors, records, embedder)
-    try:
-        from app.rag.embedder import load_embedder
-        from app.rag.retriever import INDEX_PATH, MemoryRetriever
-
-        return MemoryRetriever.from_files(INDEX_PATH, load_embedder())
-    except Exception as err:  # noqa: BLE001 - non-fatal; grounding just goes empty
+    if not DATABASE_URL:
         print(
-            f"warning: could not load retriever ({err}); running without grounding.",
+            "DATABASE_URL is not set: the real eval runs grounded against pgvector "
+            "(make db-setup), or set RAG_ENABLED=0 for an ungrounded run.",
             file=sys.stderr,
         )
-        return None
+        sys.exit(1)
+    try:
+        from app.rag.embedder import load_embedder
+        from app.rag.pg_retriever import PgVectorRetriever
+
+        return await PgVectorRetriever.connect(DATABASE_URL, RAG_PG_TABLE, load_embedder())
+    except Exception as err:  # noqa: BLE001 - reported, then a hard failure
+        print(f"could not load the pgvector retriever: {err}", file=sys.stderr)
+        sys.exit(1)
 
 
 def build_classifier() -> Any | None:
@@ -276,12 +286,10 @@ def build_client() -> Any:
 async def main() -> None:
     client = build_client()
     graph = build_graph()
-    retriever = build_retriever()
+    retriever = await build_retriever()
     classifier = build_classifier()
     cases = load_dataset()
-    grounding_note = (
-        "on" if retriever is not None else ("off" if not RAG_ENABLED else "unavailable")
-    )
+    grounding_note = "on" if retriever is not None else "off"
     classifier_note = "on" if classifier is not None else "off"
     print(
         f"Running {len(cases)} eval cases (concurrency {CONCURRENCY}); grounding "
@@ -318,6 +326,8 @@ async def main() -> None:
 
     if hasattr(client, "close"):
         await client.close()
+    if retriever is not None and hasattr(retriever, "aclose"):
+        await retriever.aclose()
 
     if not summary.passed:
         print("\nThresholds not met — see failures above.", file=sys.stderr)
