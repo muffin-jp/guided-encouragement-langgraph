@@ -1,4 +1,4 @@
--- Retrieval-grounding schema for the pgvector backend (RAG_BACKEND=pgvector).
+-- Retrieval-grounding schema (Postgres + pgvector).
 -- Apply once per database: `make db-migrate` (psql "$DATABASE_URL" -f this file),
 -- then seed the rows from the reviewed corpus with `make db-seed`.
 --

@@ -1,8 +1,8 @@
-# Local Postgres + pgvector for the pgvector retrieval backend (RAG_BACKEND=pgvector).
-# Not used by the default `memory` backend, the unit tests, or the --dry eval.
+# Local Postgres + pgvector for retrieval grounding (RAG_ENABLED, on by default).
+# Not needed with RAG_ENABLED=0, by the unit tests, or by the --dry eval.
 #
-#   make db-up db-migrate db-seed
-#   RAG_BACKEND=pgvector DATABASE_URL=postgresql://bloom:bloom@localhost:5432/bloom \
+#   make db-setup
+#   DATABASE_URL=postgresql://bloom:bloom@localhost:5432/bloom \
 #     uv run uvicorn app.main:app --reload
 #
 # Demo credentials only — do not reuse them anywhere real.
