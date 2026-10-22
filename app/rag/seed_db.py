@@ -3,7 +3,7 @@
     uv run python -m app.rag.seed_db           # (re)seed the grounding table
     uv run python -m app.rag.seed_db --check    # CI: does the table match corpus.jsonl?
 
-The pgvector twin of :mod:`app.rag.build_index`. It reads the reviewed
+The offline build for the retrieval store. It reads the reviewed
 ``corpus.jsonl``, embeds each ``text`` once with the pinned local model, and
 upserts the rows into Postgres (deleting rows whose id has left the corpus). Same
 corpus + same model → same rows; this runs offline, never at request time.

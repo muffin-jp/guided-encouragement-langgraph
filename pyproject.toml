@@ -14,22 +14,22 @@ dependencies = [
     "pydantic>=2.9",
     "slowapi>=0.1.9",
     "python-dotenv>=1.0",
-    # Retrieval grounding: the retriever loads the offline-built index and scores
-    # cosine similarity with numpy. Light, no network — the heavy embedding model
+    # Retrieval grounding: embedder output, the offline seed, and the in-memory
+    # reference retriever are numpy. Light, no network — the heavy embedding model
     # lives behind the optional `rag` extra below.
     "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 langsmith = ["langsmith>=0.1"]
-# Retrieval grounding embedder. Only needed to (a) build the index offline and
-# (b) embed the query in-process at startup when RAG_ENABLED is on. The core app,
-# the unit tests (stub embedder), and the offline `--dry` eval never import it,
-# so RAG_ENABLED=0 needs none of this. Weights are vendored at build time
-# (`make build-index`); the runtime never reaches the network to embed.
+# Retrieval grounding embedder. Only needed to (a) embed the corpus for the offline
+# seed and (b) embed the query in-process at startup when RAG_ENABLED is on. The
+# core app, the unit tests (stub embedder), and the offline `--dry` eval never
+# import it, so RAG_ENABLED=0 needs none of this. Weights are vendored at build
+# time (`make fetch-model`); the runtime never reaches the network to embed.
 rag = ["sentence-transformers>=3.0"]
-# pgvector retrieval backend. Only needed when RAG_BACKEND=pgvector; the default
-# `memory` backend, unit tests, and `--dry` eval never import a DB driver.
+# pgvector retrieval store driver. Needed whenever RAG_ENABLED is on (and for the
+# seed); unit tests without a DB and the `--dry` eval never import it.
 pgvector = ["asyncpg>=0.30", "pgvector>=0.3"]
 
 [dependency-groups]

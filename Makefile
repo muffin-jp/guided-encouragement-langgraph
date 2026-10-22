@@ -1,4 +1,4 @@
-.PHONY: fetch-model build-index check-index check-classifier sync-classifier test lint types eval eval-dry \
+.PHONY: fetch-model check-classifier sync-classifier test lint types eval eval-dry \
 	db-up db-down db-migrate db-migrate-url db-seed db-check db-setup
 
 # Local Postgres+pgvector for retrieval grounding. Override for other envs.
@@ -9,17 +9,6 @@ DATABASE_URL ?= postgresql://bloom:bloom@localhost:5432/bloom
 # the runtime loads them with local_files_only and never downloads.
 fetch-model:
 	uv run python -m app.rag.embedder
-
-# Vendor the pinned embedding weights (build-time network) and (re)build the
-# committed retrieval index from the reviewed corpus. Run this after editing
-# app/rag/corpus.jsonl, then commit app/rag/index.npz.
-build-index:
-	uv run python -m app.rag.build_index
-
-# CI guard: fail if the committed index.npz is out of date with corpus.jsonl —
-# a corpus edit can't land without its rebuilt index.
-check-index:
-	uv run python -m app.rag.build_index --check
 
 # CI guard: the committed classifier artifact is byte-identical to the one whose
 # test-set evaluation is recorded upstream, and loadable. No weights, no network.
