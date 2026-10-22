@@ -9,15 +9,17 @@
 
 services:
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: bloom
       POSTGRES_PASSWORD: bloom
       POSTGRES_DB: bloom
     ports:
       - "5432:5432"
+    # Versioned volume name: a PG17 server can't start on the old PG16 data dir
+    # (bloom_pgdata). The data is derived from the corpus — re-run `make db-seed`.
     volumes:
-      - bloom_pgdata:/var/lib/postgresql/data
+      - bloom_pgdata_17:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bloom -d bloom"]
       interval: 3s
@@ -25,4 +27,4 @@ services:
       retries: 10
 
 volumes:
-  bloom_pgdata:
+  bloom_pgdata_17:
