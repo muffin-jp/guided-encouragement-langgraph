@@ -81,22 +81,23 @@ responses — from a small **100% human-reviewed corpus** (`app/rag/corpus.jsonl
 player's feeling. They are injected into the prompt as clearly-labelled reference material — as
 **grounding, not a script**: Mamorin still writes the reply in its own voice, never quoting the
 material. The critique node + LLM judge remain the **enforced gate**, unchanged; grounding is a
-quality aid in front of that gate, not a replacement for it. Retrieval is **in-process with no
-request-time network**: the query is embedded by a pinned local model and ranked by cosine
-similarity against an offline-built index (see [Models](#models-appconfigpy)). It **fails open to
-empty grounding** — any retriever blip is logged and the reply is generated exactly as it is today —
-so this feature can never make a player wait or miss a reply. The **distress path is deliberately
+quality aid in front of that gate, not a replacement for it. **The query is embedded locally, with
+no request-time network** (a pinned local model, see [Models](#models-appconfigpy)), and ranked by
+cosine similarity in Postgres + pgvector against vectors seeded offline from the corpus. It **fails
+open to empty grounding** — a missing `DATABASE_URL`, an unreachable DB, or any retriever blip is
+logged (and surfaces as `"retriever": "failed"` on `/healthz`) and the reply is generated exactly as
+it is today — so this feature can never make a player wait or miss a reply. The **distress path is deliberately
 excluded**: crisis replies stay the fixed reviewed `SUPPORT_MESSAGE`, never RAG-generated. The kill
 switch **`RAG_ENABLED`** (default on) drops the node entirely for an instant rollback to the exact
 pre-RAG graph. Both branches are covered in `tests/test_graph.py`.
 
 The retriever sits behind a small `Retriever` Protocol, so the store is swappable without touching
-the graph. Two backends ship: **`memory`** (default) does the filter-then-rank in-process with numpy
-over the committed `index.npz`; **`pgvector`** runs the same filter + cosine + top-k as one SQL query
-against Postgres (`WHERE feeling-filter ORDER BY embedding <=> query LIMIT k`), seeded offline from
-the same corpus. **The query is embedded locally in both** — pgvector adds an internal DB hop, not a
-network embed — so the no-request-time-network story holds. `RAG_BACKEND=memory` is an instant
-fallback that needs no database.
+the graph. The one runtime store is **pgvector**: filter + cosine + top-k run as one SQL query
+(`WHERE feeling-filter ORDER BY embedding <=> query LIMIT k`) over the `grounding_passages` table,
+seeded offline from the corpus by `app/rag/seed_db.py`. pgvector adds an internal DB hop, not a
+network embed, so the no-request-time-network story holds. An in-memory `MemoryRetriever` implements
+the same semantics as a **reference only** — the unit tests, the pgvector parity test, and the
+`--dry` eval use it; it is not a runtime backend. The rollback is `RAG_ENABLED=0`.
 
 ### Human-in-the-loop moderation (non-blocking)
 
@@ -243,32 +244,30 @@ cp .env.example .env      # add your ANTHROPIC_API_KEY
 uv run uvicorn app.main:app --reload
 ```
 
-**Retrieval grounding (`RAG_ENABLED`, on by default)** needs a one-time setup: install the embedder
-extra and build the index (this downloads the pinned model weights once — the only time the network
-is touched for retrieval):
+**Retrieval grounding (`RAG_ENABLED`, on by default)** needs a one-time setup: the embedder and DB
+extras, the pinned model weights (downloaded once — the only time the network is touched for
+retrieval), and a local Postgres 17 + pgvector seeded from the corpus:
 
 ```bash
-uv sync --extra rag       # the local sentence-transformer embedder
-make build-index          # vendors the pinned weights + writes app/rag/index.npz
-```
-
-`index.npz` is committed and **must match the current `app/rag/corpus.jsonl`** — `make check-index`
-(run in CI) fails if a corpus edit landed without its rebuilt index. Prefer not to touch retrieval?
-Set `RAG_ENABLED=0` and neither the extra nor the build step is needed — the app runs its exact
-pre-RAG graph.
-
-**Optional pgvector backend (`RAG_BACKEND=pgvector`).** To run retrieval out of Postgres instead of
-the in-process index, start a local pgvector, apply the schema, and seed it from the same corpus:
-
-```bash
-uv sync --extra rag --extra pgvector
-make db-up db-migrate db-seed          # start Postgres, apply sql/, seed from corpus.jsonl
-RAG_BACKEND=pgvector DATABASE_URL=postgresql://bloom:bloom@localhost:5432/bloom \
+uv sync --extra rag --extra pgvector   # local sentence-transformer + asyncpg/pgvector
+make fetch-model                       # vendors the pinned weights into app/rag/model/
+make db-setup                          # start Postgres, apply sql/, seed from corpus.jsonl
+DATABASE_URL=postgresql://bloom:bloom@localhost:5432/bloom \
   uv run uvicorn app.main:app --reload
 ```
 
-`make db-check` guards that the live table matches the corpus, the way `check-index` guards the file.
-`DATABASE_URL` is server-side only. The default `memory` backend needs none of this.
+`make db-check` guards that the live table matches `app/rag/corpus.jsonl`. `DATABASE_URL` is
+server-side only. Prefer not to touch retrieval? Set `RAG_ENABLED=0` and none of this is needed —
+the app runs its exact pre-RAG graph.
+
+Local Postgres is **PG17** (`pgvector/pgvector:pg17`). If you ran the old PG16 container, its volume
+can't be opened by PG17 — the data is derived from the corpus, so just drop it and re-seed:
+`make db-down`, `docker volume rm <project>_bloom_pgdata`, `make db-setup`.
+
+**Changing the corpus.** Edit `app/rag/corpus.jsonl`, run `make db-seed` (it upserts and prunes ids
+that left the corpus), and confirm with `make db-check`. Every environment must be re-seeded from
+the deployed corpus on deploy — apply `sql/001_grounding.sql`, run `python -m app.rag.seed_db`, then
+`python -m app.rag.seed_db --check` and fail the deploy on drift.
 
 ```bash
 # quick smoke test (streams SSE)
@@ -315,19 +314,21 @@ uv run python evals/run.py --dry    # offline fixture: exercises routing, the lo
                                      # the gate, and the report writers with no API calls
 ```
 
-When `RAG_ENABLED` is on the eval runs the **grounded** graph (the real index + local embedder;
-`--dry` uses an offline stub embedder over the real corpus so retrieval is still exercised). The
-thresholds above are the gate; **grounding is a quality aid, so the bar is non-regression** — empathy
-and tone must not drop and the safety pass-rate stays 100%. Each run also writes a **retrieval-count
-report** (how often 0 / 2 / 3 passages were retrieved, by feeling) so corpus gaps are visible.
+When `RAG_ENABLED` is on the eval runs the **grounded** graph against the same pgvector store
+production runs (local embedder; it exits non-zero rather than silently running ungrounded if the
+retriever can't load). `--dry` uses an offline stub embedder and the in-memory reference retriever
+over the real corpus, so retrieval is still exercised with no DB. The thresholds above are the gate;
+**grounding is a quality aid, so the bar is non-regression** — empathy and tone must not drop and
+the safety pass-rate stays 100%. Each run also writes a **retrieval-count report** (how often
+0 / 2 / 3 passages were retrieved, by feeling) so corpus gaps are visible.
 
 Both `evals/results/latest.json` (full per-case detail) and `latest.md` (summary table + retrieval
 report) are written each run; the process exits non-zero when the gate isn't met.
 `.github/workflows/evals.yml` runs the real suite on PRs that touch prompts, the graph, `app/rag/**`,
-or `evals/**` (plus `workflow_dispatch`) — it syncs the `rag` extra, runs `make check-index` (which
-vendors the pinned weights and guards the committed index), then runs the gated suite with the
-`ANTHROPIC_API_KEY` repo secret and uploads the results. `ci.yml` runs lint, types, tests, and the
-dry eval on every push — no key, no model download required.
+`sql/**`, or `evals/**` (plus `workflow_dispatch`) — it starts a `pgvector/pgvector:pg17` service,
+syncs the `rag` and `pgvector` extras, runs `make fetch-model`, migrates, seeds, and `db-check`s the
+table, then runs the gated suite with the `ANTHROPIC_API_KEY` repo secret and uploads the results.
+`ci.yml` runs lint, types, tests, and the dry eval on every push — no key, no model download, no DB.
 
 ## Models (`app/config.py`)
 
@@ -338,10 +339,10 @@ dry eval on every push — no key, no model download required.
   grader.
 - **Grounding embedder** — `sentence-transformers/all-MiniLM-L6-v2`, a **pinned local** model
   (`EMBED_MODEL` / `EMBED_MODEL_REVISION`, 384-dim). **Local, offline, no request-time network**:
-  the weights are **vendored at build time** (`make build-index`) because the runtime network is
+  the weights are **vendored at build time** (`make fetch-model`) because the runtime network is
   locked to `api.anthropic.com`, and the query is embedded in-process with `local_files_only=True`.
-  Pinning by revision keeps the offline-built index reproducible — that reproducibility is the
-  defensibility story. Swappable behind the `Embedder` protocol (e.g. `fastembed`/onnx).
+  Pinning by revision keeps the seeded vectors reproducible (`make db-check` re-derives and compares
+  them) — that reproducibility is the defensibility story. Swappable behind the `Embedder` protocol (e.g. `fastembed`/onnx).
 
 ### Tunables (`app/config.py`)
 
@@ -349,12 +350,13 @@ Alongside `WORD_LIMIT`, `MAX_ATTEMPTS`, and `MODERATION_ENABLED`:
 
 - **`RAG_ENABLED`** — retrieval-grounding kill switch, **default on** (mirrors `MODERATION_ENABLED`).
   `RAG_ENABLED=0` returns the app to its **exact pre-RAG behaviour** with no code change and no
-  redeploy — the `retrieve` node isn't wired and no index/embedder is loaded.
+  redeploy — the `retrieve` node isn't wired and no retriever, DB pool, or embedder is loaded.
 - **`RAG_K`** (default 3) — passages injected as grounding · **`RAG_MIN_K`** (default 2) — preferred
   floor when the corpus has that many.
-- **`RAG_BACKEND`** — `memory` (default, in-process numpy over `index.npz`) or `pgvector` (Postgres).
-  With pgvector, **`DATABASE_URL`** (server-side only) and **`RAG_PG_TABLE`** apply.
-- **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above (used by both backends).
+- **`DATABASE_URL`** — Postgres + pgvector connection, **required when `RAG_ENABLED` is on**
+  (server-side only) · **`RAG_PG_TABLE`** (default `grounding_passages`). `RAG_BACKEND` is gone;
+  setting it to anything but `pgvector` logs a startup warning.
+- **`EMBED_MODEL`** / **`EMBED_MODEL_REVISION`** — the pinned embedder above.
 - **`CLASSIFIER_ENABLED`** — local distress classifier, **default off**. The release gate passes
   with it on, so what remains is a product decision rather than a blocker (see above). Off returns
   exactly today's `classify_distress`; on, about 14% of notes skip the Haiku call and nothing is
@@ -383,19 +385,19 @@ app/
   prompts/           # encouragement, distress, support — ported verbatim
   rag/
     corpus.jsonl     # the vetted, 100%-human-reviewed grounding passages (audit surface)
-    build_index.py   # offline deterministic index build (+ --check CI guard)
-    embedder.py      # Embedder protocol + pinned local sentence-transformer
-    retriever.py     # Retriever Protocol + MemoryRetriever (numpy over index.npz)
-    pg_retriever.py  # PgVectorRetriever — same Protocol, filter+cosine+top-k as one SQL
+    corpus.py        # corpus loading + strict validation + per-feeling coverage
+    embedder.py      # Embedder protocol + pinned local sentence-transformer (model/ is git-ignored)
+    retriever.py     # Retriever Protocol + in-memory reference retriever (tests / dry eval)
+    pg_retriever.py  # PgVectorRetriever — the runtime store: filter+cosine+top-k as one SQL
     seed_db.py       # offline seed of the pgvector table (+ --check guard)
-    index.npz        # committed, offline-built vectors (model/ weights are vendored, git-ignored)
 sql/001_grounding.sql # pgvector schema: extension, table, GIN + HNSW indexes
-docker-compose.yml    # local Postgres+pgvector for RAG_BACKEND=pgvector
+docker-compose.yml    # local Postgres 17 + pgvector for retrieval grounding
 evals/
   run.py judge.py thresholds.py report.py dry_client.py stub_embedder.py types.py dataset.jsonl results/
 tests/
   test_schemas.py test_graph.py test_sse.py test_retriever.py test_prompts.py test_classifier.py
-  test_pgvector.py  # pgvector integration + parity (skipped without DATABASE_URL)
+  test_corpus.py test_main.py
+  test_pgvector.py  # pgvector integration, parity, seed guard (skipped without DATABASE_URL)
 ```
 
 ## Non-goals
