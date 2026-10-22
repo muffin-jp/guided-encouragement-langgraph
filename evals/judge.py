@@ -19,7 +19,7 @@ from typing import Any, cast
 from anthropic import AsyncAnthropic
 
 from app.config import JUDGE_MODEL
-from evals.types import JudgeScores
+from evals.eval_types import JudgeScores
 
 __all__ = ["JUDGE_MODEL", "JUDGE_SYSTEM_PROMPT", "judge_encouragement", "parse_judge"]
 

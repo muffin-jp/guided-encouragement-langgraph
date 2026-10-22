@@ -393,7 +393,7 @@ app/
 sql/001_grounding.sql # pgvector schema: extension, table, GIN + HNSW indexes
 docker-compose.yml    # local Postgres 17 + pgvector for retrieval grounding
 evals/
-  run.py judge.py thresholds.py report.py dry_client.py stub_embedder.py types.py dataset.jsonl results/
+  run.py judge.py thresholds.py report.py dry_client.py stub_embedder.py eval_types.py dataset.jsonl results/
 tests/
   test_schemas.py test_graph.py test_sse.py test_retriever.py test_prompts.py test_classifier.py
   test_corpus.py test_main.py

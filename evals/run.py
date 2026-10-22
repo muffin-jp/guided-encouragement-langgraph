@@ -32,10 +32,10 @@ from app.graph.build import build_graph
 from app.graph.state import GraphContext
 from app.llm import build_anthropic_client
 from evals.dry_client import create_dry_client
+from evals.eval_types import CaseResult, EvalCase
 from evals.judge import judge_encouragement
 from evals.report import print_console, render_markdown, retrieval_report
 from evals.thresholds import evaluate
-from evals.types import CaseResult, EvalCase
 
 load_dotenv()
 
