@@ -210,7 +210,7 @@ def build_retriever() -> Any | None:
     if not RAG_ENABLED:
         return None
     if DRY:
-        from app.rag.build_index import load_corpus
+        from app.rag.corpus import load_corpus
         from app.rag.retriever import MemoryRetriever
         from evals.stub_embedder import StubEmbedder
 

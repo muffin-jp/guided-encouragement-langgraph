@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 
 from app.config import DATABASE_URL, RAG_PG_TABLE
-from app.rag.build_index import load_corpus
+from app.rag.corpus import load_corpus
 from app.rag.pg_retriever import safe_table
 
 _UPSERT = """
