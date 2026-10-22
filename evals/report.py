@@ -7,8 +7,8 @@ and the human-readable evals/results/latest.md summary.
 from __future__ import annotations
 
 from app.config import DISTRESS_MODEL, GENERATION_MODEL, JUDGE_MODEL
+from evals.eval_types import CaseResult
 from evals.thresholds import Metric, Summary
-from evals.types import CaseResult
 
 
 def _pct(value: float) -> str:

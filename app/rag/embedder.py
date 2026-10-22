@@ -32,7 +32,7 @@ from app.config import EMBED_MODEL, EMBED_MODEL_REVISION
 
 RAG_DIR = Path(__file__).resolve().parent
 # Vendored weights (git-ignored). Populated at build time by fetch_model / the
-# `make build-index` target; the runtime loads from here with local_files_only.
+# `make fetch-model` target; the runtime loads from here with local_files_only.
 MODEL_DIR = RAG_DIR / "model"
 
 
@@ -62,7 +62,7 @@ class SentenceTransformerEmbedder:
 
         if not model_dir.exists():
             raise FileNotFoundError(
-                f"Embedding model not vendored at {model_dir}. Run `make build-index` "
+                f"Embedding model not vendored at {model_dir}. Run `make fetch-model` "
                 "at build time (network is open there); the runtime never downloads "
                 "weights (huggingface.co is off the runtime allow-list)."
             )
@@ -107,3 +107,8 @@ def fetch_model(model_dir: Path = MODEL_DIR) -> Path:
 def load_embedder(model_dir: Path = MODEL_DIR) -> Embedder:
     """Startup factory for the real embedder (vendored weights, offline)."""
     return SentenceTransformerEmbedder(model_dir)
+
+
+if __name__ == "__main__":
+    # `make fetch-model`: vendor the pinned weights (build time; network open).
+    print(f"Vendored {EMBED_MODEL}@{EMBED_MODEL_REVISION[:12]} into {fetch_model()}")
