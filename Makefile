@@ -1,8 +1,14 @@
-.PHONY: build-index check-index check-classifier sync-classifier test lint types eval eval-dry \
+.PHONY: fetch-model build-index check-index check-classifier sync-classifier test lint types eval eval-dry \
 	db-up db-down db-migrate db-seed db-check
 
 # Local Postgres+pgvector for RAG_BACKEND=pgvector. Override for other envs.
 DATABASE_URL ?= postgresql://bloom:bloom@localhost:5432/bloom
+
+# Vendor the pinned embedding weights into app/rag/model/ (build-time network;
+# git-ignored). The seed, the real eval, and the classifier parity tests need them;
+# the runtime loads them with local_files_only and never downloads.
+fetch-model:
+	uv run python -m app.rag.embedder
 
 # Vendor the pinned embedding weights (build-time network) and (re)build the
 # committed retrieval index from the reviewed corpus. Run this after editing

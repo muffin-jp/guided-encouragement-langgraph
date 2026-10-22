@@ -12,7 +12,7 @@ It also checks that ``routes.json`` is present and belongs to this artifact. Tha
 file is what ``tests/test_classifier_parity.py`` compares against; a stale one
 would let every parity test pass while proving nothing.
 
-When the embedder weights are vendored (after `make build-index`), it also checks
+When the embedder weights are vendored (after `make fetch-model`), it also checks
 they are the snapshot the equivalence was verified against, so that claim is
 re-tested rather than trusted.
 """
