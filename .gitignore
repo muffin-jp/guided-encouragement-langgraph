@@ -32,3 +32,5 @@ app/rag/model/
 
 # Local-only design note for the pgvector migration (not part of the repo).
 docs/BUILD_SPEC_pgvector.md
+docs/BUILD_SPEC.md
+docs/BUILD_SPEC_pgvector_only.md
