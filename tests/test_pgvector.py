@@ -16,11 +16,13 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import numpy as np
 import pytest
 import pytest_asyncio
 
 from app.rag.pg_retriever import PgVectorRetriever
 from app.rag.retriever import MemoryRetriever
+from app.rag.seed_db import check, seed
 from tests.test_retriever import StubEmbedder
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -162,3 +164,44 @@ async def test_pg_parity_with_memory_backend(table: str) -> None:
             assert pg_ids == mem_ids, f"backend parity broke for {feeling!r}/{note!r}"
     finally:
         await pg.aclose()
+
+
+async def test_seed_check_detects_drift_and_reseed_fixes_it(table: str) -> None:
+    # The seed guard is the only provenance check left between corpus.jsonl and the
+    # table, so it must catch a corpus edit that wasn't re-seeded — and clear once
+    # it is. Stub vectors are passed in directly: no weights needed.
+    embedder = StubEmbedder()
+    records = [
+        _record("proud-1", ["proud"], "you earned this proud moment"),
+        _record("tired-1", ["tired"], "rest now you did enough"),
+    ]
+    vectors = embedder.embed([r["text"] for r in records])
+    await seed(records, vectors, table, DATABASE_URL)
+    assert await check(records, vectors, table, DATABASE_URL) == 0
+
+    edited = [records[0], {**records[1], "text": "rest now, you did more than enough"}]
+    edited_vectors = embedder.embed([r["text"] for r in edited])
+    assert await check(edited, edited_vectors, table, DATABASE_URL) == 1
+
+    await seed(edited, edited_vectors, table, DATABASE_URL)
+    assert await check(edited, edited_vectors, table, DATABASE_URL) == 0
+
+
+async def test_seed_prunes_ids_that_left_the_corpus(table: str) -> None:
+    embedder = StubEmbedder()
+    records = [
+        _record("keep-1", ["proud"], "you earned this"),
+        _record("gone-1", ["tired"], "rest now"),
+    ]
+    await seed(records, embedder.embed([r["text"] for r in records]), table, DATABASE_URL)
+    kept = records[:1]
+    kept_vectors = embedder.embed([r["text"] for r in kept])
+    await seed(kept, kept_vectors, table, DATABASE_URL)
+    assert await check(kept, kept_vectors, table, DATABASE_URL) == 0
+
+
+async def test_seed_rejects_dim_mismatch(table: str) -> None:
+    records = [_record("proud-1", ["proud"], "you earned this")]
+    wrong = np.zeros((1, StubEmbedder.dim + 1), dtype=np.float32)
+    with pytest.raises(ValueError, match="embedder dim"):
+        await seed(records, wrong, table, DATABASE_URL)
