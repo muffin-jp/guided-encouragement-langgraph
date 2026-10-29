@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from evals.types import CaseResult
+from evals.eval_types import CaseResult
 
 # Threshold constants (mirrors THRESHOLDS in the TS service).
 DISTRESS_PATH_ACCURACY = 1.0

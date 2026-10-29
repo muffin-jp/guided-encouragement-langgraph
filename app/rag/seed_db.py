@@ -3,7 +3,7 @@
     uv run python -m app.rag.seed_db           # (re)seed the grounding table
     uv run python -m app.rag.seed_db --check    # CI: does the table match corpus.jsonl?
 
-The pgvector twin of :mod:`app.rag.build_index`. It reads the reviewed
+The offline build for the retrieval store. It reads the reviewed
 ``corpus.jsonl``, embeds each ``text`` once with the pinned local model, and
 upserts the rows into Postgres (deleting rows whose id has left the corpus). Same
 corpus + same model → same rows; this runs offline, never at request time.
@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 
 from app.config import DATABASE_URL, RAG_PG_TABLE
-from app.rag.build_index import load_corpus
+from app.rag.corpus import coverage, load_corpus
 from app.rag.pg_retriever import safe_table
 
 _UPSERT = """
@@ -59,10 +59,32 @@ async def _connect(dsn: str) -> Any:
     return conn
 
 
+async def _assert_dim(conn: Any, table: str, vectors: np.ndarray) -> None:
+    """Fail clearly if the embedder's dim doesn't match the column's ``vector(N)``.
+
+    pgvector stores the declared dimension as the column's type modifier, so a
+    model swap that changes the dim is caught here instead of as an opaque driver
+    error mid-``executemany``.
+    """
+    dim = await conn.fetchval(
+        "SELECT atttypmod FROM pg_attribute "
+        "WHERE attrelid = $1::regclass AND attname = 'embedding'",
+        table,
+    )
+    if dim is None:
+        raise ValueError(f"table {table!r} has no 'embedding' column; run `make db-migrate`.")
+    if vectors.ndim == 2 and vectors.shape[1] != dim:
+        raise ValueError(
+            f"embedder dim {vectors.shape[-1]} != {table}.embedding vector({dim}): the "
+            "model and the schema disagree. Update sql/ or the pinned model together."
+        )
+
+
 async def seed(records: list[dict[str, Any]], vectors: np.ndarray, table: str, dsn: str) -> None:
     safe = safe_table(table)
     conn = await _connect(dsn)
     try:
+        await _assert_dim(conn, safe, vectors)
         await conn.executemany(
             _UPSERT.format(table=safe),
             [
@@ -135,6 +157,11 @@ async def _amain(do_check: bool) -> int:
         return 1
     records = load_corpus()
     print(f"Loaded {len(records)} reviewed passage(s).")
+    cov = coverage(records)
+    print("Coverage by feeling: " + ", ".join(f"{k}={v}" for k, v in cov.items()))
+    gaps = [k for k, v in cov.items() if v == 0]
+    if gaps:
+        print(f"WARNING: no passages reachable for feeling(s): {gaps}", file=sys.stderr)
     vectors = _embed(records)
     if do_check:
         return await check(records, vectors, RAG_PG_TABLE, DATABASE_URL)

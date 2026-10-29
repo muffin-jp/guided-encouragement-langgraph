@@ -47,18 +47,17 @@ MODERATION_ENABLED = os.environ.get("MODERATION_ENABLED", "true").lower() in {"1
 #
 # RAG_ENABLED is the kill switch (default on), mirroring MODERATION_ENABLED. When
 # off, build_graph wires classify_distress -> generate directly — byte-for-byte
-# today's graph — and the retriever/index/embedder are never loaded at startup.
+# today's graph — and no retriever, DB pool, or embedder is loaded at startup.
 # Flipping it off is an instant rollback to the pre-RAG behaviour, no redeploy.
 RAG_ENABLED = os.environ.get("RAG_ENABLED", "true").lower() in {"1", "true", "yes"}
 RAG_K = int(os.environ.get("RAG_K", "3"))  # passages injected as grounding
 RAG_MIN_K = int(os.environ.get("RAG_MIN_K", "2"))  # preferred floor when the corpus allows
 
-# Retrieval backend behind the same Retriever seam:
-#   memory  : in-process numpy over the committed index.npz (default; offline, CI).
-#   pgvector: Postgres + pgvector, seeded offline from corpus.jsonl (`make db-seed`).
-# The embedder is local either way — pgvector adds a DB hop, not a network embed.
-# DATABASE_URL is server-side only and required only when RAG_BACKEND=pgvector.
-RAG_BACKEND = os.environ.get("RAG_BACKEND", "memory").lower()
+# Retrieval runs from Postgres + pgvector, seeded offline from corpus.jsonl
+# (`make db-seed`). The query is still embedded locally — pgvector adds a DB hop,
+# not a network embed. DATABASE_URL is required when RAG_ENABLED is on (without it
+# replies are served ungrounded and /healthz reports "failed"); it is server-side
+# only and never returned to a client.
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 RAG_PG_TABLE = os.environ.get("RAG_PG_TABLE", "grounding_passages")
 

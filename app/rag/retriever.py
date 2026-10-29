@@ -1,16 +1,15 @@
-"""Retrieval grounding: the ``Retriever`` seam and its in-process backend.
+"""Retrieval grounding: the ``Retriever`` seam and an in-memory reference.
 
 ``Retriever`` is a Protocol — one async ``retrieve`` method. The graph
-(``GraphContext.retriever``, the ``retrieve`` node) depends only on it, so a
-backend can be swapped without touching the graph. ``MemoryRetriever`` is the
-in-process backend: it loads the offline-built index once
-(``MemoryRetriever.from_files``), does no network at request time, filters the
-vetted corpus by the player's feeling, embeds the query with the pinned local
-model, and ranks by cosine similarity. A ``PgVectorRetriever`` (Postgres) can sit
-behind the same Protocol.
+(``GraphContext.retriever``, the ``retrieve`` node) depends only on it. The one
+runtime implementation is :class:`app.rag.pg_retriever.PgVectorRetriever`.
 
-The index (``index.npz``) is built offline and deterministically by
-:mod:`app.rag.build_index`; this module only reads it.
+``MemoryRetriever`` is **not a runtime backend**. It is the in-memory reference
+for the same filter-then-rank semantics — filter the vetted corpus by the
+player's feeling, embed the query, rank by cosine similarity — built from vectors
+and records handed to it directly. The unit tests, the pgvector parity test (as
+the ranking oracle), and ``evals/run.py --dry`` use it, so retrieval stays
+testable with no DB, no weights, and no network.
 """
 
 # NumPy's overloaded ufunc/linalg stubs resolve to partially-unknown types under
@@ -20,9 +19,7 @@ The index (``index.npz``) is built offline and deterministically by
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
@@ -34,9 +31,6 @@ if TYPE_CHECKING:
     from app.rag.embedder import Embedder
 
 logger = logging.getLogger("bloom.rag")
-
-RAG_DIR = Path(__file__).resolve().parent
-INDEX_PATH = RAG_DIR / "index.npz"
 
 
 def build_query(feeling: str, free_text: str | None) -> str:
@@ -67,7 +61,7 @@ class Retriever(Protocol):
 
 
 class MemoryRetriever:
-    """In-process filter-then-rank retrieval over the vetted corpus (numpy)."""
+    """In-memory reference filter-then-rank retrieval (numpy) — tests and dry eval only."""
 
     def __init__(self, vectors: np.ndarray, records: list[dict[str, Any]], embedder: Embedder):
         # ``records`` carry the filter tags (``feelings``) alongside the public
@@ -75,30 +69,6 @@ class MemoryRetriever:
         self._vectors = np.asarray(vectors, dtype=np.float32)
         self._records = records
         self._embedder = embedder
-
-    @classmethod
-    def from_files(cls, index_path: Path, embedder: Embedder) -> MemoryRetriever:
-        """Load a committed ``index.npz`` and pair it with an embedder.
-
-        ``allow_pickle=False``: the vectors are a plain float array and the
-        metadata is a JSON string, so the index never needs to unpickle
-        arbitrary objects to load.
-        """
-        with np.load(index_path, allow_pickle=False) as data:
-            vectors = data["vectors"].astype(np.float32)
-            meta = json.loads(str(data["meta"].item()))
-        records: list[dict[str, Any]] = meta["passages"]
-        if vectors.shape[0] != len(records):
-            raise ValueError(
-                f"index.npz is inconsistent: {vectors.shape[0]} vectors vs "
-                f"{len(records)} passages — rebuild it with `make build-index`."
-            )
-        if embedder.dim and vectors.shape[1] != embedder.dim:
-            raise ValueError(
-                f"embedder dim {embedder.dim} != index dim {vectors.shape[1]}: the "
-                "index was built with a different model. Rebuild with `make build-index`."
-            )
-        return cls(vectors, records, embedder)
 
     async def retrieve(
         self, feeling: str, free_text: str | None, *, k: int = RAG_K

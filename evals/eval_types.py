@@ -1,7 +1,10 @@
 """Shared eval data types.
 
 Ported from the TypeScript evals/types.ts. Kept separate from the runner so the
-judge, thresholds, and report modules can all import them without cycles.
+judge, thresholds, and report modules can all import them without cycles. Named
+``eval_types`` rather than ``types``: ``python evals/run.py`` puts ``evals/`` first
+on ``sys.path``, so a ``types.py`` here shadows the stdlib module the interpreter
+imports on startup.
 """
 
 from __future__ import annotations

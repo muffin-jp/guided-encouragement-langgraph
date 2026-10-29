@@ -1,4 +1,4 @@
-"""Retriever unit tests: filtering, ordering, floors, and offline loading.
+"""Retriever unit tests: filtering, ordering, and floors.
 
 No model and no network — a deterministic ``StubEmbedder`` (bag-of-words over a
 hashed vocabulary) stands in for the pinned sentence-transformer, exactly the
@@ -10,10 +10,8 @@ seam the real ``Embedder`` protocol exists for.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -134,29 +132,3 @@ async def test_returned_passages_drop_internal_tags() -> None:
         "source": "test",
     }
     assert "feelings" not in got[0]  # filter tag never leaks to the prompt
-
-
-async def test_from_files_round_trip(tmp_path: Path) -> None:
-    records = [
-        _record("proud-1", ["proud"], "you earned this"),
-        _record("uni-1", ["*"], "it makes sense"),
-    ]
-    embedder = StubEmbedder()
-    vectors = embedder.embed([r["text"] for r in records])
-    meta = json.dumps({"model": "stub", "revision": "0", "dim": _DIM, "passages": records})
-    index_path = tmp_path / "index.npz"
-    np.savez(index_path, vectors=vectors, meta=np.array(meta))
-
-    r = MemoryRetriever.from_files(index_path, embedder)
-    got = await r.retrieve("proud", None, k=3)
-    assert {p["id"] for p in got} == {"proud-1", "uni-1"}
-
-
-async def test_from_files_rejects_dim_mismatch(tmp_path: Path) -> None:
-    records = [_record("proud-1", ["proud"], "you earned this")]
-    vectors = np.zeros((1, 8), dtype=np.float32)  # 8 != stub's 32
-    meta = json.dumps({"model": "stub", "revision": "0", "dim": 8, "passages": records})
-    index_path = tmp_path / "index.npz"
-    np.savez(index_path, vectors=vectors, meta=np.array(meta))
-    with pytest.raises(ValueError, match="dim"):
-        MemoryRetriever.from_files(index_path, StubEmbedder())

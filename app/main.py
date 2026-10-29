@@ -23,8 +23,9 @@ from app.config import (
     CLASSIFIER_ENABLED,
     CORS_ALLOW_ORIGIN_REGEX,
     CORS_ALLOW_ORIGINS,
-    RAG_BACKEND,
+    DATABASE_URL,
     RAG_ENABLED,
+    RAG_PG_TABLE,
     langsmith_enabled,
 )
 from app.graph.build import build_graph
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # retrieval grounding, the local distress classifier, or both share it. When
     # neither is on, nothing here loads — no torch import, no vendored weights.
     app.state.retriever = None
+    app.state.retriever_status = "enabled" if RAG_ENABLED else "disabled"
     app.state.classifier = None
     app.state.classifier_status = "disabled"
     embedder = None
@@ -65,28 +67,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # note escalates to the LLM — exactly the behaviour with both off.
             logger.exception("failed to load the local embedder; retrieval and classifier off")
 
-    if RAG_ENABLED and embedder is not None:
-        try:
-            if RAG_BACKEND == "pgvector":
-                from app.config import DATABASE_URL, RAG_PG_TABLE
+    # RAG_BACKEND used to choose between an in-process index and pgvector; only
+    # pgvector remains. Warn a stale deployment that still sets it to something
+    # else, rather than silently ignoring the setting.
+    legacy_backend = os.environ.get("RAG_BACKEND", "").lower()
+    if legacy_backend and legacy_backend != "pgvector":
+        logger.warning(
+            "RAG_BACKEND=%s is no longer supported and is ignored; retrieval always uses "
+            "pgvector (DATABASE_URL)",
+            legacy_backend,
+        )
+
+    if RAG_ENABLED:
+        if embedder is None:
+            # Already logged above; replies are served ungrounded until it's fixed.
+            app.state.retriever_status = "failed"
+        else:
+            try:
+                if not DATABASE_URL:
+                    raise RuntimeError("RAG_ENABLED requires DATABASE_URL (pgvector)")
                 from app.rag.pg_retriever import PgVectorRetriever
 
-                if not DATABASE_URL:
-                    raise RuntimeError("RAG_BACKEND=pgvector requires DATABASE_URL")
                 app.state.retriever = await PgVectorRetriever.connect(
                     DATABASE_URL, RAG_PG_TABLE, embedder
                 )
-                logger.info("retrieval grounding enabled (pgvector backend)")
-            else:
-                from app.rag.retriever import INDEX_PATH, MemoryRetriever
-
-                app.state.retriever = MemoryRetriever.from_files(INDEX_PATH, embedder)
-                logger.info("retrieval grounding enabled (memory backend)")
-        except Exception:
-            # Fail open: a startup problem loading retrieval must not take the
-            # service down. The retrieve node fails open to empty grounding, so
-            # the app simply behaves as pre-RAG until the backend is fixed.
-            logger.exception("failed to load retriever; continuing with no grounding")
+                logger.info("retrieval grounding enabled (pgvector)")
+            except Exception:
+                # Fail open: a startup problem loading retrieval must not take the
+                # service down. The retrieve node fails open to empty grounding, so
+                # the app simply behaves as pre-RAG until the DB is fixed — and
+                # /healthz reports "failed" so that isn't invisible.
+                app.state.retriever_status = "failed"
+                logger.exception("failed to load retriever; continuing with no grounding")
 
     # Local distress classifier: dark by default (see CLASSIFIER_ENABLED in
     # config for why it must stay off). A load failure is logged and surfaced on
@@ -122,10 +134,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if client is not None:
         await client.close()
 
-    # Close the pgvector pool if one was opened (memory backend has no aclose).
-    aclose = getattr(app.state.retriever, "aclose", None)
-    if aclose is not None:
-        await aclose()
+    # Close the pgvector pool if one was opened.
+    if app.state.retriever is not None:
+        await app.state.retriever.aclose()
 
 
 app = FastAPI(title="Bloom — Guided Encouragement", lifespan=lifespan)
@@ -158,4 +169,7 @@ async def healthz() -> dict[str, bool | str]:
         # "disabled", "enabled", or "failed" — a failed load escalates every note,
         # which is safe, but should not be invisible.
         "classifier": app.state.classifier_status,
+        # Same shape for retrieval: "failed" means replies are served ungrounded
+        # (missing DATABASE_URL, unreachable DB, missing table, or no embedder).
+        "retriever": app.state.retriever_status,
     }
